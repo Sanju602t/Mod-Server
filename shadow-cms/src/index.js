@@ -3,7 +3,7 @@
 // ============================================================
 
 // -------------------- Embedded index.html --------------------
-const INDEX_HTML = `<!DOCTYPE html>
+const INDEX_HTML = String.raw`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -821,8 +821,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   checkSession();
 </script>
 </body>
-</html>
-`;
+</html>`;
 
 // ============================================================
 //  WORKER HANDLER
