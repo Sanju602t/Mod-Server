@@ -908,14 +908,14 @@ async function requireAuth(request, env) {
   return session;
 }
 
+// ----- FIXED COOKIE FUNCTIONS (Secure always) -----
 function setSessionCookie(token, expiresAt) {
-  const maxAge = expiresAt - Math.floor(Date.now() / 1000);
-  const secure = process.env.NODE_ENV === 'production' ? ' Secure;' : '';
-  return `session_token=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge};${secure}`;
+  const maxAge = Math.max(0, expiresAt - Math.floor(Date.now() / 1000));
+  return `session_token=${token}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
 function clearSessionCookie() {
-  return 'session_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0;';
+  return 'session_token=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0';
 }
 
 // ============================================================
