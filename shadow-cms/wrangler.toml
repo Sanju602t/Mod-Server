@@ -1,6 +1,6 @@
-name = "shadow-cms"
+name = "mod-server"
 main = "src/index.js"
-compatibility_date = "2026-9-4"
+compatibility_date = "2026-9-04"
 
 # D1 Database
 [[d1_databases]]
