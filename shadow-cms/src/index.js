@@ -2,8 +2,8 @@
 //  Cloudflare Worker – Shadow CMS
 // ============================================================
 
-// -------------------- Embedded index.html --------------------
-const INDEX_HTML = String.raw`<!DOCTYPE html>
+// -------------------- Embedded index.html (NO String.raw) --------------------
+const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
