@@ -430,7 +430,7 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
 
   function showToast(msg, isError = false) {
     const toast = document.createElement('div');
-    toast.className = `toast ${isError ? 'error' : ''}`;
+    toast.className = 'toast ' + (isError ? 'error' : '');
     toast.textContent = msg;
     toastContainer.appendChild(toast);
     setTimeout(() => { toast.remove(); }, 3000);
@@ -533,10 +533,10 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
       const viewBtn = card.querySelector('.view-btn');
       if (viewBtn) {
         viewBtn.addEventListener('click', () => {
-          if (type === 'note') window.open(`/n/${id}`, '_blank');
+          if (type === 'note') window.open('/n/' + id, '_blank');
           else {
             const slug = pages.find(p => p.id === id)?.slug;
-            if (slug) window.open(`/p/${slug}`, '_blank');
+            if (slug) window.open('/p/' + slug, '_blank');
           }
         });
       }
@@ -544,7 +544,7 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
       const copyBtn = card.querySelector('.copy-btn');
       if (copyBtn) {
         copyBtn.addEventListener('click', () => {
-          const url = type === 'note' ? `/n/${id}` : `/p/${pages.find(p => p.id === id)?.slug}`;
+          const url = type === 'note' ? '/n/' + id : '/p/' + (pages.find(p => p.id === id)?.slug || '');
           const full = window.location.origin + url;
           navigator.clipboard.writeText(full).then(() => showToast('URL copied!')).catch(() => {});
         });
@@ -553,7 +553,7 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
       const deleteBtn = card.querySelector('.delete-btn');
       if (deleteBtn) {
         deleteBtn.addEventListener('click', () => {
-          if (confirm(`Delete this ${type}?`)) deleteItem(type, id);
+          if (confirm('Delete this ' + type + '?')) deleteItem(type, id);
         });
       }
     });
@@ -561,30 +561,30 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
 
   function createNoteCard(note) {
     const date = new Date(note.updated_at).toLocaleDateString();
-    return `<div class="item-card" data-type="note" data-id="${note.id}">
-      <div class="title">${escHtml(note.title)}</div>
-      <div class="meta">Updated ${date}</div>
-      <div class="actions">
-        <button class="btn btn-sm edit-btn">Edit</button>
-        <button class="btn btn-sm view-btn">View</button>
-        <button class="btn btn-sm copy-btn">Copy URL</button>
-        <button class="btn btn-sm btn-danger delete-btn">Delete</button>
-      </div>
-    </div>`;
+    return '<div class="item-card" data-type="note" data-id="' + note.id + '">' +
+      '<div class="title">' + escHtml(note.title) + '</div>' +
+      '<div class="meta">Updated ' + date + '</div>' +
+      '<div class="actions">' +
+        '<button class="btn btn-sm edit-btn">Edit</button>' +
+        '<button class="btn btn-sm view-btn">View</button>' +
+        '<button class="btn btn-sm copy-btn">Copy URL</button>' +
+        '<button class="btn btn-sm btn-danger delete-btn">Delete</button>' +
+      '</div>' +
+    '</div>';
   }
 
   function createPageCard(page) {
     const date = new Date(page.updated_at).toLocaleDateString();
-    return `<div class="item-card" data-type="page" data-id="${page.id}">
-      <div class="title">${escHtml(page.title)}</div>
-      <div class="meta">/${escHtml(page.slug)} · Updated ${date}</div>
-      <div class="actions">
-        <button class="btn btn-sm edit-btn">Edit</button>
-        <button class="btn btn-sm view-btn">View</button>
-        <button class="btn btn-sm copy-btn">Copy URL</button>
-        <button class="btn btn-sm btn-danger delete-btn">Delete</button>
-      </div>
-    </div>`;
+    return '<div class="item-card" data-type="page" data-id="' + page.id + '">' +
+      '<div class="title">' + escHtml(page.title) + '</div>' +
+      '<div class="meta">/' + escHtml(page.slug) + ' · Updated ' + date + '</div>' +
+      '<div class="actions">' +
+        '<button class="btn btn-sm edit-btn">Edit</button>' +
+        '<button class="btn btn-sm view-btn">View</button>' +
+        '<button class="btn btn-sm copy-btn">Copy URL</button>' +
+        '<button class="btn btn-sm btn-danger delete-btn">Delete</button>' +
+      '</div>' +
+    '</div>';
   }
 
   function escHtml(str) {
@@ -643,7 +643,7 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
 
   // --- New Note ---
   function openNewNote() {
-    openModal(`
+    openModal(\`
       <h2>New Note</h2>
       <form id="noteForm">
         <div class="form-group">
@@ -659,7 +659,7 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
           <button type="submit" class="btn" id="saveNoteBtn">Save</button>
         </div>
       </form>
-    `);
+    \`);
     const form = document.getElementById('noteForm');
     form.addEventListener('submit', async () => {
       const title = document.getElementById('noteTitle').value.trim();
@@ -676,16 +676,16 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
     if (type === 'note') {
       const note = notes.find(n => n.id === id);
       if (!note) return;
-      openModal(`
+      openModal(\`
         <h2>Edit Note</h2>
         <form id="noteForm">
           <div class="form-group">
             <label>Title</label>
-            <input type="text" id="noteTitle" value="${escHtml(note.title)}" required />
+            <input type="text" id="noteTitle" value="\${escHtml(note.title)}" required />
           </div>
           <div class="form-group">
             <label>Content</label>
-            <textarea id="noteContent" rows="8" required>${escHtml(note.content)}</textarea>
+            <textarea id="noteContent" rows="8" required>\${escHtml(note.content)}</textarea>
           </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-danger delete-btn" id="deleteNoteBtn">Delete</button>
@@ -693,19 +693,19 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
             <button type="submit" class="btn" id="saveNoteBtn">Save</button>
           </div>
         </form>
-      `);
+      \`);
       const form = document.getElementById('noteForm');
       form.addEventListener('submit', async () => {
         const title = document.getElementById('noteTitle').value.trim();
         const content = document.getElementById('noteContent').value.trim();
         if (!title || !content) { showToast('Title and content required', true); return; }
-        const { res, data } = await apiCall('PUT', `/api/notes/${id}`, { title, content });
+        const { res, data } = await apiCall('PUT', '/api/notes/' + id, { title, content });
         if (res.ok) { showToast('Note updated'); closeModal(); await fetchNotes(); render(); }
         else { showToast(data.error || 'Failed to update note', true); }
       });
       document.getElementById('deleteNoteBtn').addEventListener('click', async () => {
         if (confirm('Delete this note?')) {
-          const { res } = await apiCall('DELETE', `/api/notes/${id}`);
+          const { res } = await apiCall('DELETE', '/api/notes/' + id);
           if (res.ok) { showToast('Note deleted'); closeModal(); await fetchNotes(); render(); }
           else { showToast('Delete failed', true); }
         }
@@ -713,21 +713,21 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
     } else if (type === 'page') {
       const page = pages.find(p => p.id === id);
       if (!page) return;
-      openModal(`
+      openModal(\`
         <h2>Edit Page</h2>
         <form id="pageForm">
           <div class="form-group">
             <label>Title</label>
-            <input type="text" id="pageTitle" value="${escHtml(page.title)}" required />
+            <input type="text" id="pageTitle" value="\${escHtml(page.title)}" required />
           </div>
           <div class="form-group">
             <label>Slug</label>
-            <input type="text" id="pageSlug" value="${escHtml(page.slug)}" required pattern="[a-zA-Z0-9\\-]+" />
+            <input type="text" id="pageSlug" value="\${escHtml(page.slug)}" required pattern="[a-zA-Z0-9\\-]+" />
             <small style="color:var(--text-secondary);">Letters, numbers, hyphens only.</small>
           </div>
           <div class="form-group">
             <label>HTML</label>
-            <textarea id="pageHtml" rows="10" required>${escHtml(page.html)}</textarea>
+            <textarea id="pageHtml" rows="10" required>\${escHtml(page.html)}</textarea>
           </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-danger delete-btn" id="deletePageBtn">Delete</button>
@@ -736,27 +736,27 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
             <button type="submit" class="btn" id="savePageBtn">Save</button>
           </div>
         </form>
-      `);
+      \`);
       const form = document.getElementById('pageForm');
       form.addEventListener('submit', async () => {
         const title = document.getElementById('pageTitle').value.trim();
         const slug = document.getElementById('pageSlug').value.trim();
         const html = document.getElementById('pageHtml').value.trim();
         if (!title || !slug || !html) { showToast('All fields required', true); return; }
-        const { res, data } = await apiCall('PUT', `/api/pages/${id}`, { title, slug, html });
+        const { res, data } = await apiCall('PUT', '/api/pages/' + id, { title, slug, html });
         if (res.ok) { showToast('Page updated'); closeModal(); await fetchPages(); render(); }
         else { showToast(data.error || 'Failed to update page', true); }
       });
       document.getElementById('deletePageBtn').addEventListener('click', async () => {
         if (confirm('Delete this page?')) {
-          const { res } = await apiCall('DELETE', `/api/pages/${id}`);
+          const { res } = await apiCall('DELETE', '/api/pages/' + id);
           if (res.ok) { showToast('Page deleted'); closeModal(); await fetchPages(); render(); }
           else { showToast('Delete failed', true); }
         }
       });
       document.getElementById('previewPageBtn').addEventListener('click', () => {
         const slug = document.getElementById('pageSlug').value.trim();
-        if (slug) window.open(`/p/${slug}`, '_blank');
+        if (slug) window.open('/p/' + slug, '_blank');
         else showToast('Enter a slug first', true);
       });
     }
@@ -764,7 +764,7 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
 
   // --- New Page ---
   function openNewPage() {
-    openModal(`
+    openModal(\`
       <h2>New Page</h2>
       <form id="pageForm">
         <div class="form-group">
@@ -786,7 +786,7 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
           <button type="submit" class="btn" id="savePageBtn">Save</button>
         </div>
       </form>
-    `);
+    \`);
     const form = document.getElementById('pageForm');
     form.addEventListener('submit', async () => {
       const title = document.getElementById('pageTitle').value.trim();
@@ -799,17 +799,17 @@ const INDEX_HTML = String.raw`<!DOCTYPE html>
     });
     document.getElementById('previewPageBtn').addEventListener('click', () => {
       const slug = document.getElementById('pageSlug').value.trim();
-      if (slug) window.open(`/p/${slug}`, '_blank');
+      if (slug) window.open('/p/' + slug, '_blank');
       else showToast('Enter a slug first', true);
     });
   }
 
   // --- Delete item (from card) ---
   async function deleteItem(type, id) {
-    const endpoint = type === 'note' ? `/api/notes/${id}` : `/api/pages/${id}`;
+    const endpoint = type === 'note' ? '/api/notes/' + id : '/api/pages/' + id;
     const { res } = await apiCall('DELETE', endpoint);
     if (res.ok) {
-      showToast(`${type} deleted`);
+      showToast(type + ' deleted');
       if (type === 'note') { await fetchNotes(); } else { await fetchPages(); }
       render();
     } else {
@@ -1119,7 +1119,7 @@ async function handleApi(request, env, ctx) {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    const id = generateNoteId(); // use same generator for internal ID
+    const id = generateNoteId();
     const now = Date.now();
     await env.DB.prepare(
       'INSERT INTO pages (id, title, slug, html, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
@@ -1258,7 +1258,6 @@ async function handlePageView(slug, env) {
   if (!page) {
     return new Response('Page not found', { status: 404 });
   }
-  // Return the stored HTML as-is
   return new Response(page.html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' },
   });
