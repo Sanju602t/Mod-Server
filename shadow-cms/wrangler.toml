@@ -1,12 +1,12 @@
 name = "shadow-cms"
 main = "src/index.js"
-compatibility_date = "2024-12-18"
+compatibility_date = "2026-9-4"
 
 # D1 Database
 [[d1_databases]]
 binding = "DB"
 database_name = "shadow-cms-db"
-database_id = "your-database-id"  # replace after creation
+database_id = "7a237072-84d7-4be2-bfe0-4a634969ec16"  # replace after creation
 
 # Environment variables (username is public, password is secret)
 [vars]
