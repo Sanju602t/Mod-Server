@@ -46,20 +46,68 @@ export async function handleAppStorePage(request, env) {
 // -------------------- Parser: extract multiple apps from a page --------------------
 function extractAppsFromPage(html, slug) {
   if (!html || typeof html !== 'string') return [];
-
   const results = [];
 
-  // ----- 1. PRIMARY: .cards .card structure (multiple apps) -----
-  // Match <a class="card" href="#..."> ... </a>
-  const cardRegex = /<a[^>]*class\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  // Match all <a> tags with class="card" (any order of attributes)
+  const cardRegex = /<a\s+[^>]*\bclass\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*\bhref\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  
   let match;
   while ((match = cardRegex.exec(html)) !== null) {
     const href = match[1].trim();
     const cardContent = match[2];
 
-    // Extract icon (img src)
+    // Extract icon
     const iconMatch = cardContent.match(/<img[^>]*src\s*=\s*["']([^"']*)["']/i);
     let icon = iconMatch ? iconMatch[1].trim() : '';
+
+    // Extract name from <h2> – remove nested <span class="tag">
+    const h2Match = cardContent.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+    if (!h2Match) continue;
+    
+    let nameHtml = h2Match[1].trim();
+    let tag = '';
+    
+    // Remove .tag content from name
+    const tagMatch = nameHtml.match(/<span[^>]*class\s*=\s*["'][^"']*\btag\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+    if (tagMatch) {
+      tag = tagMatch[1].trim();
+      nameHtml = nameHtml.replace(/<span[^>]*class\s*=\s*["'][^"']*\btag\b[^"']*["'][^>]*>[\s\S]*?<\/span>/i, '');
+    }
+    
+    const name = nameHtml.trim();
+    if (!name) continue;
+
+    // Extract description from <span class="desc">
+    const descMatch = cardContent.match(/<span[^>]*class\s*=\s*["'][^"']*\bdesc\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+    const description = descMatch ? descMatch[1].trim() : '';
+
+    // Resolve icon URL
+    const resolvedIcon = resolveIconUrl(icon, slug);
+
+    // Determine anchor (fragment from href)
+    let anchor = '';
+    if (href.startsWith('#')) {
+      anchor = href.slice(1);
+    }
+
+    results.push({
+      name,
+      icon: resolvedIcon,
+      description,
+      tag,
+      anchor,
+    });
+  }
+
+  // If cards found, return them
+  if (results.length > 0) {
+    return results;
+  }
+
+  // Fallback: single-app conventions (data-app or .app-name)
+  const single = extractSingleApp(html, slug);
+  return single ? [single] : [];
+}
 
     // Extract name (h2) – remove nested .tag
     const h2Match = cardContent.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
