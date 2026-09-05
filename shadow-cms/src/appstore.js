@@ -48,15 +48,21 @@ function extractAppsFromPage(html, slug) {
   if (!html || typeof html !== 'string') return [];
   const results = [];
 
-  // Match all <a> tags with class="card" (any order of attributes)
-  const cardRegex = /<a\s+[^>]*\bclass\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*\bhref\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
-
+  // ---- STEP 1: Find all <a class="card"> elements ----
+  // This regex matches <a> tags that contain class="card" (any attribute order)
+  const cardTagRegex = /<a[^>]*class\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
-  while ((match = cardRegex.exec(html)) !== null) {
-    const href = match[1].trim();
-    const cardContent = match[2];
+  while ((match = cardTagRegex.exec(html)) !== null) {
+    const cardContent = match[1]; // inner HTML of the <a> tag
 
-    // Extract icon
+    // Extract href from the <a> tag itself (we need the full tag)
+    // We have the full tag from the original match, but we can re-extract href from the cardContent? 
+    // Actually we need the href from the <a> tag, not from inside. Better to capture the whole tag.
+    // Let's re-match the entire tag with a simpler regex that includes href.
+    const fullTagMatch = html.substring(match.index, match.index + match[0].length).match(/<a[^>]*href\s*=\s*["']([^"']*)["']/i);
+    const href = fullTagMatch ? fullTagMatch[1].trim() : '';
+
+    // Extract icon from inner content
     const iconMatch = cardContent.match(/<img[^>]*src\s*=\s*["']([^"']*)["']/i);
     let icon = iconMatch ? iconMatch[1].trim() : '';
 
@@ -104,7 +110,7 @@ function extractAppsFromPage(html, slug) {
     return results;
   }
 
-  // Fallback: single-app conventions (data-app or .app-name)
+  // ---- STEP 2: Fallback to single-app conventions ----
   const single = extractSingleApp(html, slug);
   return single ? [single] : [];
 }
