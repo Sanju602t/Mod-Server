@@ -1,19 +1,19 @@
 // ============================================================
-//  appstore.js – Shadow CMS App Store Module
-//  Standalone public page & JSON API
+//  appstore.js – Shadow CMS Public App Store
+//  Handles /appstore with multi-app extraction
 // ============================================================
 
 /**
- * Public App Store page handler – renders a complete HTML page.
+ * Public App Store page handler – returns a complete HTML page.
  */
 export async function handleAppStorePage(request, env) {
   try {
-    // 1. Fetch all pages from D1
+    // Fetch all pages from D1
     const { results: pages } = await env.DB.prepare(
       'SELECT slug, html, updated_at FROM pages ORDER BY updated_at DESC'
     ).all();
 
-    // 2. Extract all apps from all pages
+    // Extract all apps from all pages
     const allApps = [];
     for (const page of pages) {
       const apps = extractAppsFromPage(page.html, page.slug);
@@ -26,80 +26,38 @@ export async function handleAppStorePage(request, env) {
       }
     }
 
-    // 3. Sort by updated_at descending (newest first)
+    // Sort by updated_at descending (newest first)
     allApps.sort((a, b) => b.updated_at - a.updated_at);
 
-    // 4. Build HTML page
+    // Build and return HTML page
     const html = buildAppStorePage(allApps);
-
     return new Response(html, {
       status: 200,
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
   } catch (err) {
-    console.error('App Store page error:', err);
+    console.error('App Store error:', err);
     return new Response('Sorry, the App Store is temporarily unavailable.', {
       status: 500,
     });
   }
 }
 
-/**
- * JSON API handler for /api/apps (used by admin dashboard).
- * Uses the same extraction logic, returns JSON.
- */
-export async function handleAppStore(request, env) {
-  try {
-    const { results: pages } = await env.DB.prepare(
-      'SELECT slug, html, updated_at FROM pages ORDER BY updated_at DESC'
-    ).all();
-
-    const allApps = [];
-    for (const page of pages) {
-      const apps = extractAppsFromPage(page.html, page.slug);
-      for (const app of apps) {
-        allApps.push({
-          id: page.id,         // page id (if needed)
-          name: app.name,
-          icon: app.icon,
-          description: app.description || '',
-          tag: app.tag || '',
-          slug: page.slug,
-          url: `/p/${page.slug}${app.anchor ? '#' + app.anchor : ''}`,
-          updated_at: page.updated_at,
-        });
-      }
-    }
-
-    allApps.sort((a, b) => b.updated_at - a.updated_at);
-
-    return new Response(JSON.stringify(allApps), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  } catch (err) {
-    console.error('App Store API error:', err);
-    return new Response(JSON.stringify({ error: 'Failed to load apps' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-}
-
-// -------------------- Helper: Extract apps from a single page --------------------
+// -------------------- Parser: extract multiple apps from a page --------------------
 function extractAppsFromPage(html, slug) {
   if (!html || typeof html !== 'string') return [];
 
   const results = [];
 
-  // ----- 1. TRY .cards .card structure (multiple apps) -----
+  // ----- 1. PRIMARY: .cards .card structure (multiple apps) -----
+  // Match <a class="card" href="#..."> ... </a>
   const cardRegex = /<a[^>]*class\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = cardRegex.exec(html)) !== null) {
     const href = match[1].trim();
     const cardContent = match[2];
 
-    // Extract icon
+    // Extract icon (img src)
     const iconMatch = cardContent.match(/<img[^>]*src\s*=\s*["']([^"']*)["']/i);
     let icon = iconMatch ? iconMatch[1].trim() : '';
 
@@ -107,9 +65,8 @@ function extractAppsFromPage(html, slug) {
     const h2Match = cardContent.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
     if (!h2Match) continue;
     let nameHtml = h2Match[1].trim();
-    // Remove .tag content
-    const tagMatch = nameHtml.match(/<span[^>]*class\s*=\s*["'][^"']*\btag\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
     let tag = '';
+    const tagMatch = nameHtml.match(/<span[^>]*class\s*=\s*["'][^"']*\btag\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
     if (tagMatch) {
       tag = tagMatch[1].trim();
       nameHtml = nameHtml.replace(/<span[^>]*class\s*=\s*["'][^"']*\btag\b[^"']*["'][^>]*>[\s\S]*?<\/span>/i, '');
@@ -124,15 +81,10 @@ function extractAppsFromPage(html, slug) {
     // Resolve icon URL
     const resolvedIcon = resolveIconUrl(icon, slug);
 
-    // Determine anchor: from href, remove leading '#'
+    // Determine anchor (fragment from href)
     let anchor = '';
     if (href.startsWith('#')) {
       anchor = href.slice(1);
-    } else {
-      // If href is a full URL or relative, we could still try to extract fragment, but for simplicity we keep as is.
-      // The requirement says href="#youtube" so we assume it's a fragment.
-      // If not, we might ignore or treat as full URL? We'll just use the href as anchor if it starts with '#'.
-      // For other cases, we could fallback to using the app name slug, but we'll keep simple.
     }
 
     results.push({
@@ -140,24 +92,20 @@ function extractAppsFromPage(html, slug) {
       icon: resolvedIcon,
       description,
       tag,
-      anchor, // the fragment part (e.g., "youtube")
+      anchor,
     });
   }
 
-  // If we found at least one card using the new structure, return them.
+  // If we found at least one card, return them
   if (results.length > 0) {
     return results;
   }
 
   // ----- 2. FALLBACK: single-app conventions (data-app or .app-name) -----
-  // This preserves backward compatibility for pages that don't use .cards .card.
   const single = extractSingleApp(html, slug);
   return single ? [single] : [];
 }
 
-/**
- * Extract a single app using the old data-app or class-based conventions.
- */
 function extractSingleApp(html, slug) {
   // data-* convention
   const dataAppRegex = /<[^>]*\s+data-app\s+[^>]*>/i;
@@ -174,7 +122,7 @@ function extractSingleApp(html, slug) {
         icon: resolveIconUrl(icon, slug),
         description,
         tag: '',
-        anchor: '', // no anchor for single app
+        anchor: '',
       };
     }
   }
@@ -202,20 +150,15 @@ function extractSingleApp(html, slug) {
   return null;
 }
 
-/**
- * Resolve relative icon URLs against the page's base ( /p/:slug/ ).
- */
 function resolveIconUrl(icon, slug) {
   if (!icon) return '';
   if (/^https?:\/\//i.test(icon)) return icon;
   if (icon.startsWith('/')) return icon; // root-relative
-  // relative to page: /p/${slug}/${icon}
-  return `/p/${slug}/${icon}`;
+  return `/p/${slug}/${icon}`; // relative to page
 }
 
 // -------------------- Build the HTML page --------------------
 function buildAppStorePage(apps) {
-  // Escape HTML entities for safe rendering
   const esc = (str) => {
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -223,7 +166,6 @@ function buildAppStorePage(apps) {
   };
   const escAttr = (str) => esc(str).replace(/"/g, '&quot;');
 
-  // Generate app cards HTML
   let cardsHtml = '';
   if (apps.length === 0) {
     cardsHtml = `<div class="empty-state">No apps found. Check back later!</div>`;
@@ -253,7 +195,6 @@ function buildAppStorePage(apps) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Shadow App Store</title>
   <style>
-    /* ----- Reset & Variables ----- */
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg: #f0f2f5;
@@ -277,7 +218,6 @@ function buildAppStorePage(apps) {
       max-width: 1100px;
       margin: 0 auto;
     }
-    /* ----- Header ----- */
     .app-store-header {
       display: flex;
       flex-wrap: wrap;
@@ -320,7 +260,6 @@ function buildAppStorePage(apps) {
       border-color: var(--primary);
       box-shadow: 0 0 0 3px rgba(90, 106, 207, 0.2);
     }
-    /* ----- App Grid ----- */
     .app-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -410,21 +349,18 @@ function buildAppStorePage(apps) {
     .app-card:hover .open-btn {
       background: var(--primary-hover);
     }
-    /* Empty state */
     .empty-state {
       text-align: center;
       padding: 3rem 0;
       color: var(--text-secondary);
       font-size: 1.2rem;
     }
-    /* No results */
     .no-results {
       display: none;
       text-align: center;
       padding: 2rem 0;
       color: var(--text-secondary);
     }
-    /* Responsive */
     @media (max-width: 640px) {
       .app-store-header { flex-direction: column; align-items: stretch; }
       .search-box { max-width: 100%; }
@@ -448,7 +384,6 @@ function buildAppStorePage(apps) {
 </div>
 
 <script>
-  // Client-side search
   const searchInput = document.getElementById('searchInput');
   const cards = document.querySelectorAll('.app-card');
   const noResults = document.getElementById('noResults');
@@ -466,8 +401,6 @@ function buildAppStorePage(apps) {
   }
 
   searchInput.addEventListener('input', filterApps);
-
-  // Initial filter (in case of pre-filled search)
   filterApps();
 </script>
 </body>
