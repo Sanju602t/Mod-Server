@@ -1,823 +1,1427 @@
-// worker.js
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const path = url.pathname;
+// ============================================================
+//  Cloudflare Worker – Shadow CMS (with App Store)
+// ============================================================
 
-    // CORS and preflight handling (if needed)
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Cookie' } });
-    }
-
-    // Public routes
-    if (path.startsWith('/n/')) {
-      return handleNoteView(request, env);
-    }
-    if (path.startsWith('/raw/')) {
-      return handleRawNote(request, env);
-    }
-    if (path.startsWith('/p/')) {
-      return handlePageView(request, env);
-    }
-
-    // API routes
-    if (path === '/api/login' && request.method === 'POST') {
-      return handleLogin(request, env);
-    }
-    if (path === '/api/logout' && request.method === 'POST') {
-      return handleLogout(request, env);
-    }
-    if (path === '/api/session' && request.method === 'GET') {
-      return handleSession(request, env);
-    }
-    if (path === '/api/notes') {
-      return handleNotes(request, env);
-    }
-    if (path.startsWith('/api/notes/')) {
-      return handleNoteById(request, env);
-    }
-    if (path === '/api/pages') {
-      return handlePages(request, env);
-    }
-    if (path.startsWith('/api/pages/')) {
-      return handlePageById(request, env);
-    }
-    // New App Store endpoint (authenticated read-only)
-    if (path === '/api/apps' && request.method === 'GET') {
-      return handleApps(request, env);
-    }
-
-    // Serve the SPA for all other routes (dashboard)
-    return serveSPA(request, env);
-  },
-};
-
-// ---------- Helper: Authentication ----------
-async function getSessionUser(request, env) {
-  const cookie = request.headers.get('Cookie') || '';
-  const token = cookie.split(';').find(c => c.trim().startsWith('session='));
-  if (!token) return null;
-  const sessionToken = token.split('=')[1].trim();
-  const result = await env.DB.prepare('SELECT user_id FROM sessions WHERE session_token = ? AND expires_at > datetime("now")').bind(sessionToken).first();
-  return result ? result.user_id : null;
-}
-
-function requireAuth(request, env) {
-  return getSessionUser(request, env);
-}
-
-// ---------- Login / Logout / Session ----------
-async function handleLogin(request, env) {
-  const { username, password } = await request.json();
-  const validUser = env.USERNAME || 'admin';
-  const validPass = env.PASSWORD || 'password';
-  if (username !== validUser || password !== validPass) {
-    return new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
-  }
-  // Generate session token
-  const token = crypto.randomUUID();
-  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  await env.DB.prepare('INSERT INTO sessions (session_token, user_id, expires_at) VALUES (?, ?, ?)')
-    .bind(token, 'admin', expires).run();
-  return new Response(JSON.stringify({ success: true }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Set-Cookie': `session=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${7 * 24 * 60 * 60}`,
-    },
-  });
-}
-
-async function handleLogout(request, env) {
-  const user = await getSessionUser(request, env);
-  if (user) {
-    const cookie = request.headers.get('Cookie') || '';
-    const token = cookie.split(';').find(c => c.trim().startsWith('session='));
-    if (token) {
-      const sessionToken = token.split('=')[1].trim();
-      await env.DB.prepare('DELETE FROM sessions WHERE session_token = ?').bind(sessionToken).run();
-    }
-  }
-  return new Response(JSON.stringify({ success: true }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Set-Cookie': 'session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0',
-    },
-  });
-}
-
-async function handleSession(request, env) {
-  const user = await getSessionUser(request, env);
-  return new Response(JSON.stringify({ authenticated: !!user }), { headers: { 'Content-Type': 'application/json' } });
-}
-
-// ---------- Notes ----------
-async function handleNotes(request, env) {
-  const user = await getSessionUser(request, env);
-  if (!user) return new Response('Unauthorized', { status: 401 });
-
-  if (request.method === 'GET') {
-    const result = await env.DB.prepare('SELECT id, title, content, created_at, updated_at FROM notes ORDER BY updated_at DESC').all();
-    return new Response(JSON.stringify(result.results), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  if (request.method === 'POST') {
-    const { title, content } = await request.json();
-    const result = await env.DB.prepare('INSERT INTO notes (title, content) VALUES (?, ?) RETURNING id, created_at, updated_at')
-      .bind(title, content).first();
-    return new Response(JSON.stringify(result), { status: 201, headers: { 'Content-Type': 'application/json' } });
-  }
-
-  return new Response('Method not allowed', { status: 405 });
-}
-
-async function handleNoteById(request, env) {
-  const user = await getSessionUser(request, env);
-  if (!user) return new Response('Unauthorized', { status: 401 });
-
-  const id = request.url.split('/').pop();
-  if (request.method === 'GET') {
-    const result = await env.DB.prepare('SELECT id, title, content, created_at, updated_at FROM notes WHERE id = ?').bind(id).first();
-    if (!result) return new Response('Not found', { status: 404 });
-    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  if (request.method === 'PUT') {
-    const { title, content } = await request.json();
-    const result = await env.DB.prepare('UPDATE notes SET title = ?, content = ?, updated_at = datetime("now") WHERE id = ? RETURNING id, created_at, updated_at')
-      .bind(title, content, id).first();
-    if (!result) return new Response('Not found', { status: 404 });
-    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  if (request.method === 'DELETE') {
-    const result = await env.DB.prepare('DELETE FROM notes WHERE id = ?').bind(id).run();
-    if (result.changes === 0) return new Response('Not found', { status: 404 });
-    return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  return new Response('Method not allowed', { status: 405 });
-}
-
-// Public note views
-async function handleNoteView(request, env) {
-  const id = request.url.split('/').pop();
-  const note = await env.DB.prepare('SELECT title, content FROM notes WHERE id = ?').bind(id).first();
-  if (!note) return new Response('Note not found', { status: 404 });
-  const html = `<!DOCTYPE html><html><head><title>${note.title}</title></head><body><h1>${note.title}</h1><div>${note.content}</div></body></html>`;
-  return new Response(html, { headers: { 'Content-Type': 'text/html' } });
-}
-
-async function handleRawNote(request, env) {
-  const id = request.url.split('/').pop();
-  const note = await env.DB.prepare('SELECT content FROM notes WHERE id = ?').bind(id).first();
-  if (!note) return new Response('Note not found', { status: 404 });
-  return new Response(note.content, { headers: { 'Content-Type': 'text/plain' } });
-}
-
-// ---------- Pages ----------
-async function handlePages(request, env) {
-  const user = await getSessionUser(request, env);
-  if (!user) return new Response('Unauthorized', { status: 401 });
-
-  if (request.method === 'GET') {
-    const result = await env.DB.prepare('SELECT id, slug, html, created_at, updated_at FROM pages ORDER BY updated_at DESC').all();
-    return new Response(JSON.stringify(result.results), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  if (request.method === 'POST') {
-    const { slug, html } = await request.json();
-    if (!slug || !html) return new Response('Missing slug or html', { status: 400 });
-    // Check if slug exists
-    const existing = await env.DB.prepare('SELECT id FROM pages WHERE slug = ?').bind(slug).first();
-    if (existing) return new Response('Slug already exists', { status: 409 });
-    const result = await env.DB.prepare('INSERT INTO pages (slug, html) VALUES (?, ?) RETURNING id, created_at, updated_at')
-      .bind(slug, html).first();
-    return new Response(JSON.stringify(result), { status: 201, headers: { 'Content-Type': 'application/json' } });
-  }
-
-  return new Response('Method not allowed', { status: 405 });
-}
-
-async function handlePageById(request, env) {
-  const user = await getSessionUser(request, env);
-  if (!user) return new Response('Unauthorized', { status: 401 });
-
-  const id = request.url.split('/').pop();
-  if (request.method === 'GET') {
-    const result = await env.DB.prepare('SELECT id, slug, html, created_at, updated_at FROM pages WHERE id = ?').bind(id).first();
-    if (!result) return new Response('Not found', { status: 404 });
-    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  if (request.method === 'PUT') {
-    const { slug, html } = await request.json();
-    if (!slug || !html) return new Response('Missing slug or html', { status: 400 });
-    // Check if slug is already used by another page
-    const existing = await env.DB.prepare('SELECT id FROM pages WHERE slug = ? AND id != ?').bind(slug, id).first();
-    if (existing) return new Response('Slug already exists', { status: 409 });
-    const result = await env.DB.prepare('UPDATE pages SET slug = ?, html = ?, updated_at = datetime("now") WHERE id = ? RETURNING id, created_at, updated_at')
-      .bind(slug, html, id).first();
-    if (!result) return new Response('Not found', { status: 404 });
-    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  if (request.method === 'DELETE') {
-    const result = await env.DB.prepare('DELETE FROM pages WHERE id = ?').bind(id).run();
-    if (result.changes === 0) return new Response('Not found', { status: 404 });
-    return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
-  }
-
-  return new Response('Method not allowed', { status: 405 });
-}
-
-// Public page view
-async function handlePageView(request, env) {
-  const slug = request.url.split('/').pop();
-  const page = await env.DB.prepare('SELECT html FROM pages WHERE slug = ?').bind(slug).first();
-  if (!page) return new Response('Page not found', { status: 404 });
-  // Render the HTML directly
-  return new Response(page.html, { headers: { 'Content-Type': 'text/html' } });
-}
-
-// ---------- App Store ----------
-// Extract app metadata from page HTML using regex (documented convention)
-function extractAppMetadata(html, slug) {
-  // Use class-based extraction: .app-name, .app-icon, .app-description (optional)
-  // Also support data-* attributes for robustness: <div data-app-name="..." data-app-icon="..." data-app-description="...">
-  let name = null, icon = null, description = null;
-
-  // Try data attributes first
-  const dataMatch = html.match(/<[^>]*data-app-name\s*=\s*["']([^"']*)["'][^>]*>/i);
-  if (dataMatch) {
-    name = dataMatch[1].trim();
-    const iconMatch = html.match(/<[^>]*data-app-icon\s*=\s*["']([^"']*)["'][^>]*>/i);
-    if (iconMatch) icon = iconMatch[1].trim();
-    const descMatch = html.match(/<[^>]*data-app-description\s*=\s*["']([^"']*)["'][^>]*>/i);
-    if (descMatch) description = descMatch[1].trim();
-    if (name && icon) return { name, icon, description };
-  }
-
-  // Fallback to class-based extraction
-  const nameRegex = /<[^>]*class\s*=\s*["'][^"']*app-name[^"']*["'][^>]*>([\s\S]*?)<\/[^>]*>/i;
-  const nameMatch = html.match(nameRegex);
-  if (nameMatch) name = nameMatch[1].trim();
-
-  // Icon: look for img with class app-icon, extract src
-  const iconRegex = /<img[^>]*class\s*=\s*["'][^"']*app-icon[^"']*["'][^>]*src\s*=\s*["']([^"']*)["'][^>]*>/i;
-  const iconMatch = html.match(iconRegex);
-  if (iconMatch) icon = iconMatch[1].trim();
-
-  // Description: paragraph with class app-description
-  const descRegex = /<[^>]*class\s*=\s*["'][^"']*app-description[^"']*["'][^>]*>([\s\S]*?)<\/[^>]*>/i;
-  const descMatch = html.match(descRegex);
-  if (descMatch) description = descMatch[1].trim();
-
-  // If name or icon missing, return null (skip)
-  if (!name || !icon) return null;
-  // Resolve relative icon URL: if starts with '/', keep as is (will be relative to origin)
-  // otherwise if not absolute, prepend '/'? Actually pages are served under /p/slug, so relative URLs will work.
-  // We'll just pass through.
-  return { name, icon, description };
-}
-
-async function handleApps(request, env) {
-  const user = await getSessionUser(request, env);
-  if (!user) return new Response('Unauthorized', { status: 401 });
-
-  // Fetch all pages
-  const pages = await env.DB.prepare('SELECT id, slug, html, updated_at FROM pages').all();
-  const apps = [];
-  for (const page of pages.results) {
-    const metadata = extractAppMetadata(page.html, page.slug);
-    if (metadata) {
-      apps.push({
-        id: page.id,
-        name: metadata.name,
-        icon: metadata.icon,
-        description: metadata.description || null,
-        slug: page.slug,
-        url: `/p/${page.slug}`,
-        updated_at: page.updated_at,
-      });
-    }
-  }
-  // Sort by updated_at descending
-  apps.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-  return new Response(JSON.stringify(apps), { headers: { 'Content-Type': 'application/json' } });
-}
-
-// ---------- SPA (Dashboard) ----------
-// The single-page application HTML with embedded CSS and JavaScript
+// -------------------- Embedded index.html --------------------
 const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Shadow CMS</title>
   <style>
-    /* Reset & base */
+    /* ----- CSS Reset & Variables (unchanged) ----- */
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #1a202c; padding: 1rem; }
-    .container { max-width: 1200px; margin: 0 auto; }
+    :root {
+      --bg: #f6f9fc;
+      --card: #ffffff;
+      --text: #1a202c;
+      --text-secondary: #4a5568;
+      --border: #e2e8f0;
+      --primary: #5a6acf;
+      --primary-hover: #4a5abc;
+      --danger: #e53e3e;
+      --danger-hover: #c53030;
+      --radius: 12px;
+      --shadow: 0 4px 12px rgba(0,0,0,0.05);
+      --transition: 0.2s ease;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 1rem;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+    }
+    #app { max-width: 1200px; width: 100%; }
+
+    /* ----- Login (unchanged) ----- */
+    #login-section {
+      max-width: 400px;
+      margin: 10vh auto;
+      background: var(--card);
+      padding: 2rem;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    #login-section h1 {
+      margin-bottom: 1.5rem;
+      font-weight: 600;
+      font-size: 1.8rem;
+      text-align: center;
+    }
+    .input-group { margin-bottom: 1rem; }
+    .input-group label {
+      display: block;
+      font-size: 0.9rem;
+      font-weight: 500;
+      margin-bottom: 0.3rem;
+      color: var(--text-secondary);
+    }
+    .input-group input {
+      width: 100%;
+      padding: 0.7rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 1rem;
+      transition: border var(--transition);
+    }
+    .input-group input:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.7rem 1.5rem;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background var(--transition), transform 0.1s;
+      text-decoration: none;
+      text-align: center;
+    }
+    .btn:hover { background: var(--primary-hover); }
+    .btn:active { transform: scale(0.97); }
+    .btn-danger { background: var(--danger); }
+    .btn-danger:hover { background: var(--danger-hover); }
+    .btn-outline {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    .btn-outline:hover { background: var(--bg); }
+    .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+    .btn-block { width: 100%; }
+    #login-error {
+      color: var(--danger);
+      margin-top: 0.5rem;
+      text-align: center;
+      font-size: 0.9rem;
+    }
+
+    /* ----- Dashboard ----- */
+    #dashboard-section { display: none; }
+
     /* Header */
-    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; }
-    .header h1 { font-size: 1.8rem; }
-    .header-actions { display: flex; gap: 1rem; align-items: center; }
-    .btn { background: #e2e8f0; border: none; padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; font-size: 0.9rem; transition: background 0.2s; }
-    .btn-primary { background: #3182ce; color: #fff; }
-    .btn-primary:hover { background: #2b6cb0; }
-    .btn-danger { background: #e53e3e; color: #fff; }
-    .btn-danger:hover { background: #c53030; }
-    .btn-outline { background: transparent; border: 1px solid #cbd5e0; }
-    .btn-outline:hover { background: #edf2f7; }
-    /* Navigation */
-    .nav { display: flex; gap: 1rem; margin-bottom: 1.5rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; flex-wrap: wrap; }
-    .nav a { text-decoration: none; color: #4a5568; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-weight: 500; cursor: pointer; }
-    .nav a.active { color: #2b6cb0; background: #ebf4ff; }
-    .nav a:hover { background: #edf2f7; }
-    /* Search */
-    .search { margin-bottom: 1.5rem; }
-    .search input { width: 100%; max-width: 400px; padding: 0.5rem; border: 1px solid #cbd5e0; border-radius: 0.375rem; }
-    /* Cards grid */
-    .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1.5rem; }
-    .card { background: #fff; border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 1rem; transition: transform 0.2s; }
-    .card:hover { transform: translateY(-2px); box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    .card img { width: 64px; height: 64px; object-fit: contain; display: block; margin-bottom: 0.5rem; }
-    .card h3 { font-size: 1.1rem; margin-bottom: 0.25rem; }
-    .card p { color: #718096; font-size: 0.9rem; margin-bottom: 0.75rem; }
-    .card .actions { display: flex; justify-content: flex-end; }
-    /* Forms */
-    .form-group { margin-bottom: 1rem; }
-    .form-group label { display: block; font-weight: 500; margin-bottom: 0.25rem; }
-    .form-group input, .form-group textarea { width: 100%; padding: 0.5rem; border: 1px solid #cbd5e0; border-radius: 0.375rem; }
-    .form-group textarea { min-height: 150px; font-family: monospace; }
-    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; z-index: 100; }
-    .modal.active { display: flex; }
-    .modal-content { background: #fff; padding: 2rem; border-radius: 0.5rem; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; }
-    .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
-    .toast { position: fixed; bottom: 1rem; right: 1rem; background: #1a202c; color: #fff; padding: 0.75rem 1.5rem; border-radius: 0.375rem; opacity: 0; transition: opacity 0.3s; z-index: 200; }
-    .toast.show { opacity: 1; }
-    .view { display: none; }
-    .view.active { display: block; }
-    .app-icon-placeholder { width: 64px; height: 64px; background: #e2e8f0; border-radius: 0.375rem; display: flex; align-items: center; justify-content: center; font-size: 2rem; color: #a0aec0; margin-bottom: 0.5rem; }
-    /* Responsive */
-    @media (max-width: 600px) {
-      .header { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+    .dashboard-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1rem;
+      gap: 1rem;
+    }
+    .dashboard-header h1 {
+      font-weight: 700;
+      font-size: 1.8rem;
+    }
+    .header-actions {
+      display: flex;
+      gap: 0.8rem;
+      align-items: center;
+    }
+    .add-btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 48px;
+      height: 48px;
+      font-size: 1.8rem;
+      cursor: pointer;
+      transition: background var(--transition);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 8px rgba(90, 106, 207, 0.3);
+    }
+    .add-btn:hover { background: var(--primary-hover); }
+    .logout-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      padding: 0.5rem 1.2rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: all var(--transition);
+    }
+    .logout-btn:hover {
+      background: var(--danger);
+      color: #fff;
+      border-color: var(--danger);
+    }
+
+    /* ----- Navigation Tabs (new) ----- */
+    .nav-tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+    .nav-tab {
+      background: transparent;
+      border: none;
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: 6px;
+      transition: background var(--transition), color var(--transition);
+    }
+    .nav-tab:hover { background: var(--bg); color: var(--text); }
+    .nav-tab.active {
+      color: var(--primary);
+      background: #eef1ff;
+    }
+
+    /* ----- Search ----- */
+    .search-bar { margin-bottom: 1.5rem; }
+    .search-bar input {
+      width: 100%;
+      max-width: 400px;
+      padding: 0.6rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 1rem;
+    }
+
+    /* ----- Content sections ----- */
+    .content-section { margin-bottom: 2.5rem; }
+    .content-section h2 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--text-secondary);
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+    .item-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .item-card {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 1.2rem;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+      transition: border var(--transition);
+    }
+    .item-card:hover { border-color: var(--primary); }
+    .item-card .title {
+      font-weight: 600;
+      font-size: 1.1rem;
+      margin-bottom: 0.4rem;
+      word-break: break-word;
+    }
+    .item-card .meta {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.8rem;
+    }
+    .item-card .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+    .item-card .actions .btn { font-size: 0.75rem; padding: 0.3rem 0.7rem; }
+    .empty-state {
+      color: var(--text-secondary);
+      padding: 2rem 0;
+      text-align: center;
+      font-style: italic;
+    }
+
+    /* ----- App Store specific styles (new) ----- */
+    .app-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 1.5rem 1rem;
+    }
+    .app-card .app-icon {
+      width: 80px;
+      height: 80px;
+      border-radius: 16px;
+      object-fit: cover;
+      margin-bottom: 0.8rem;
+      background: #e2e8f0;
+    }
+    .app-card .app-name {
+      font-weight: 600;
+      font-size: 1.1rem;
+      margin-bottom: 0.3rem;
+    }
+    .app-card .app-desc {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.8rem;
+      flex-grow: 1;
+    }
+    .app-card .app-actions {
+      width: 100%;
+    }
+    .app-card .app-actions .btn {
+      width: 100%;
+    }
+
+    /* ----- Modals (unchanged) ----- */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 1rem;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: var(--card);
+      border-radius: var(--radius);
+      max-width: 700px;
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 2rem;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+      animation: fadeIn 0.2s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    .modal h2 { margin-bottom: 1.5rem; font-weight: 600; }
+    .modal .form-group { margin-bottom: 1.2rem; }
+    .modal .form-group label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 0.3rem;
+      color: var(--text-secondary);
+    }
+    .modal .form-group input,
+    .modal .form-group textarea {
+      width: 100%;
+      padding: 0.7rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 1rem;
+      font-family: inherit;
+      transition: border var(--transition);
+    }
+    .modal .form-group textarea {
+      min-height: 120px;
+      font-family: monospace;
+      resize: vertical;
+    }
+    .modal .form-group input:focus,
+    .modal .form-group textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    .modal .modal-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+      margin-top: 1.5rem;
+      justify-content: flex-end;
+    }
+    .modal .modal-actions .btn { min-width: 80px; }
+    .modal .modal-actions .btn-danger { margin-right: auto; }
+    .preview-btn { margin-right: auto; }
+
+    /* ----- Toast (unchanged) ----- */
+    .toast-container {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .toast {
+      background: #1a202c;
+      color: #fff;
+      padding: 0.8rem 1.5rem;
+      border-radius: 8px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+      animation: slideIn 0.3s ease;
+      max-width: 400px;
+      font-size: 0.95rem;
+    }
+    .toast.error { background: var(--danger); }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ----- Responsive ----- */
+    @media (max-width: 640px) {
+      .dashboard-header { flex-direction: column; align-items: stretch; }
       .header-actions { justify-content: flex-end; }
+      .item-grid { grid-template-columns: 1fr; }
+      .modal { padding: 1.5rem; }
+      .nav-tabs { flex-wrap: wrap; }
     }
   </style>
 </head>
 <body>
-<div class="container" id="app">
-  <!-- Header -->
-  <header class="header">
-    <h1>📝 Shadow CMS</h1>
-    <div class="header-actions">
-      <button class="btn btn-primary" id="addBtn">+ Add</button>
-      <button class="btn btn-danger" id="logoutBtn">Logout</button>
+<div id="app">
+  <!-- Login Section -->
+  <section id="login-section">
+    <h1>🔐 Shadow CMS</h1>
+    <form id="login-form">
+      <div class="input-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" placeholder="Enter username" required />
+      </div>
+      <div class="input-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="Enter password" required />
+      </div>
+      <button type="submit" class="btn btn-block">Log In</button>
+      <div id="login-error"></div>
+    </form>
+  </section>
+
+  <!-- Dashboard -->
+  <section id="dashboard-section">
+    <header class="dashboard-header">
+      <h1>📝 Shadow CMS</h1>
+      <div class="header-actions">
+        <button class="add-btn" id="addBtn" title="Add content">+</button>
+        <button class="logout-btn" id="logoutBtn">Logout</button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs (new) -->
+    <div class="nav-tabs" id="navTabs">
+      <button class="nav-tab active" data-view="notes">📝 Notes</button>
+      <button class="nav-tab" data-view="pages">🌐 Pages</button>
+      <button class="nav-tab" data-view="appstore">📱 App Store</button>
     </div>
-  </header>
 
-  <!-- Navigation -->
-  <nav class="nav" id="nav">
-    <a data-view="notes" class="active">📝 Notes</a>
-    <a data-view="pages">🌐 Pages</a>
-    <a data-view="apps">📱 App Store</a>
-  </nav>
-
-  <!-- Search -->
-  <div class="search" id="searchContainer">
-    <input type="text" id="searchInput" placeholder="Search..." />
-  </div>
-
-  <!-- Views -->
-  <div id="viewNotes" class="view active">
-    <div id="notesList" class="card-grid"></div>
-  </div>
-  <div id="viewPages" class="view">
-    <div id="pagesList" class="card-grid"></div>
-  </div>
-  <div id="viewApps" class="view">
-    <div id="appsList" class="card-grid"></div>
-  </div>
-
-  <!-- Modal -->
-  <div class="modal" id="modal">
-    <div class="modal-content">
-      <h2 id="modalTitle">Add New</h2>
-      <form id="modalForm">
-        <div class="form-group">
-          <label for="modalSlug">Slug (for Pages)</label>
-          <input type="text" id="modalSlug" placeholder="my-page" />
-        </div>
-        <div class="form-group">
-          <label for="modalTitle">Title</label>
-          <input type="text" id="modalTitle" placeholder="Title" />
-        </div>
-        <div class="form-group">
-          <label for="modalContent">Content / HTML</label>
-          <textarea id="modalContent" placeholder="Content..."></textarea>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-outline" id="modalCancel">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="modalSave">Save</button>
-        </div>
-      </form>
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Search..." />
     </div>
+
+    <!-- Dynamic content area -->
+    <div id="contentArea"></div>
+  </section>
+
+  <!-- Add Menu (floating) -->
+  <div id="addMenu" style="display:none; position:fixed; bottom:6rem; right:2rem; background:var(--card); border-radius:var(--radius); box-shadow:0 8px 24px rgba(0,0,0,0.15); padding:0.5rem; z-index:500;">
+    <button class="btn btn-block" style="border-radius:6px; margin-bottom:0.3rem;" data-action="note">📝 New Note</button>
+    <button class="btn btn-block" style="border-radius:6px;" data-action="page">🌐 New Page</button>
   </div>
 
-  <!-- Toast -->
-  <div class="toast" id="toast"></div>
+  <!-- Modals -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modalContent"></div>
+  </div>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toastContainer"></div>
 </div>
 
 <script>
-  // ---------- State ----------
-  let currentView = 'notes';
+  // ============================================================
+  //  FRONTEND – Vanilla JS SPA (with App Store)
+  // ============================================================
+
+  // --- State ---
+  let currentUser = null;
   let notes = [];
   let pages = [];
-  let apps = [];
-  let editingId = null;
-  let editingType = null; // 'note' or 'page'
   let searchTerm = '';
+  let currentView = 'notes'; // 'notes' | 'pages' | 'appstore'
 
-  // ---------- DOM refs ----------
-  const $ = id => document.getElementById(id);
-  const viewNotes = $('viewNotes');
-  const viewPages = $('viewPages');
-  const viewApps = $('viewApps');
-  const notesList = $('notesList');
-  const pagesList = $('pagesList');
-  const appsList = $('appsList');
-  const searchInput = $('searchInput');
-  const modal = $('modal');
-  const modalTitle = $('modalTitle');
-  const modalForm = $('modalForm');
-  const modalSlug = $('modalSlug');
-  const modalTitleInput = $('modalTitle');
-  const modalContent = $('modalContent');
-  const modalCancel = $('modalCancel');
-  const modalSave = $('modalSave');
-  const addBtn = $('addBtn');
-  const logoutBtn = $('logoutBtn');
-  const toast = $('toast');
-  const navLinks = document.querySelectorAll('#nav a');
+  // --- DOM refs ---
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => document.querySelectorAll(sel);
 
-  // ---------- Helpers ----------
-  function showToast(msg) {
-    toast.textContent = msg;
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 3000);
-  }
+  const loginSection = $('#login-section');
+  const dashboardSection = $('#dashboard-section');
+  const loginForm = $('#login-form');
+  const loginError = $('#login-error');
+  const logoutBtn = $('#logoutBtn');
+  const addBtn = $('#addBtn');
+  const addMenu = $('#addMenu');
+  const searchInput = $('#searchInput');
+  const contentArea = $('#contentArea');
+  const navTabs = $('#navTabs');
+  const modalOverlay = $('#modalOverlay');
+  const modalContent = $('#modalContent');
+  const toastContainer = $('#toastContainer');
 
-  function api(method, url, data) {
-    return fetch(url, {
+  // --- API helpers (unchanged) ---
+  async function apiCall(method, path, body) {
+    const opts = {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: data ? JSON.stringify(data) : undefined,
       credentials: 'include',
-    }).then(res => res.json());
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(path, opts);
+    const data = await res.json().catch(() => ({}));
+    return { res, data };
   }
 
-  // ---------- Authentication ----------
+  function showToast(msg, isError = false) {
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + (isError ? 'error' : '');
+    toast.textContent = msg;
+    toastContainer.appendChild(toast);
+    setTimeout(() => { toast.remove(); }, 3000);
+  }
+
+  // --- Authentication (unchanged) ---
   async function checkSession() {
-    try {
-      const res = await fetch('/api/session', { credentials: 'include' });
-      const data = await res.json();
-      if (!data.authenticated) {
-        window.location.href = '/login'; // fallback, but we handle via SPA
-        return false;
-      }
-      return true;
-    } catch {
-      return false;
+    const { res, data } = await apiCall('GET', '/api/session');
+    if (res.ok && data.authenticated) {
+      currentUser = data.user;
+      showDashboard();
+    } else {
+      showLogin();
     }
   }
 
-  // ---------- Render ----------
-  function renderNotes() {
-    const filtered = notes.filter(n => 
-      n.title.toLowerCase().includes(searchTerm) ||
-      n.content.toLowerCase().includes(searchTerm)
-    );
-    notesList.innerHTML = filtered.map(n => `
-      <div class="card">
-        <h3>${escapeHtml(n.title)}</h3>
-        <p>${escapeHtml(n.content.substring(0, 100))}</p>
-        <div class="actions">
-          <button class="btn btn-outline" onclick="editNote('${n.id}')">Edit</button>
-          <button class="btn btn-danger" onclick="deleteNote('${n.id}')">Delete</button>
-        </div>
-        <small>Updated: ${new Date(n.updated_at).toLocaleDateString()}</small>
-      </div>
-    `).join('');
+  function showLogin() {
+    loginSection.style.display = 'block';
+    dashboardSection.style.display = 'none';
+    loginError.textContent = '';
   }
 
-  function renderPages() {
-    const filtered = pages.filter(p => 
-      p.slug.toLowerCase().includes(searchTerm) ||
-      p.html.toLowerCase().includes(searchTerm)
-    );
-    pagesList.innerHTML = filtered.map(p => `
-      <div class="card">
-        <h3>${escapeHtml(p.slug)}</h3>
-        <p>${escapeHtml(p.html.substring(0, 100))}</p>
-        <div class="actions">
-          <button class="btn btn-outline" onclick="editPage('${p.id}')">Edit</button>
-          <button class="btn btn-danger" onclick="deletePage('${p.id}')">Delete</button>
-          <a href="/p/${p.slug}" target="_blank" class="btn btn-primary">View</a>
-        </div>
-        <small>Updated: ${new Date(p.updated_at).toLocaleDateString()}</small>
-      </div>
-    `).join('');
+  function showDashboard() {
+    loginSection.style.display = 'none';
+    dashboardSection.style.display = 'block';
+    fetchAllData();
   }
 
-  function renderApps() {
-    const filtered = apps.filter(a =>
-      a.name.toLowerCase().includes(searchTerm) ||
-      a.slug.toLowerCase().includes(searchTerm) ||
-      (a.description && a.description.toLowerCase().includes(searchTerm))
-    );
-    appsList.innerHTML = filtered.map(a => `
-      <div class="card">
-        ${a.icon ? `<img src="${escapeHtml(a.icon)}" alt="${escapeHtml(a.name)}" onerror="this.style.display='none'" />` : `<div class="app-icon-placeholder">📱</div>`}
-        <h3>${escapeHtml(a.name)}</h3>
-        ${a.description ? `<p>${escapeHtml(a.description)}</p>` : ''}
-        <div class="actions">
-          <a href="${a.url}" class="btn btn-primary">Open</a>
-        </div>
-        <small>Updated: ${new Date(a.updated_at).toLocaleDateString()}</small>
-      </div>
-    `).join('');
+  loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = $('#username').value.trim();
+    const password = $('#password').value.trim();
+    loginError.textContent = '';
+    const { res, data } = await apiCall('POST', '/api/login', { username, password });
+    if (res.ok) {
+      showToast('Logged in successfully');
+      checkSession();
+    } else {
+      loginError.textContent = data.error || 'Invalid credentials';
+    }
+  });
+
+  logoutBtn.addEventListener('click', async () => {
+    await apiCall('POST', '/api/logout');
+    currentUser = null;
+    showLogin();
+    showToast('Logged out');
+  });
+
+  // --- Data fetching (unchanged) ---
+  async function fetchAllData() {
+    await Promise.all([fetchNotes(), fetchPages()]);
+    render();
   }
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
-  // ---------- Data fetching ----------
   async function fetchNotes() {
-    const data = await api('GET', '/api/notes');
-    notes = data;
-    if (currentView === 'notes') renderNotes();
+    const { res, data } = await apiCall('GET', '/api/notes');
+    if (res.ok) { notes = data; } else { notes = []; showToast('Failed to load notes', true); }
   }
 
   async function fetchPages() {
-    const data = await api('GET', '/api/pages');
-    pages = data;
-    if (currentView === 'pages') renderPages();
+    const { res, data } = await apiCall('GET', '/api/pages');
+    if (res.ok) { pages = data; } else { pages = []; showToast('Failed to load pages', true); }
   }
 
-  async function fetchApps() {
-    const data = await api('GET', '/api/apps');
-    apps = data;
-    if (currentView === 'apps') renderApps();
+  // --- Rendering ---
+  function render() {
+    const view = currentView;
+    if (view === 'notes') renderNotes();
+    else if (view === 'pages') renderPages();
+    else if (view === 'appstore') renderAppStore();
+    updateAddButton();
   }
 
-  // ---------- CRUD operations ----------
-  window.editNote = (id) => {
-    const note = notes.find(n => n.id === id);
-    if (!note) return;
-    editingId = id;
-    editingType = 'note';
-    modalTitle.textContent = 'Edit Note';
-    modalSlug.style.display = 'none';
-    modalTitleInput.value = note.title;
-    modalContent.value = note.content;
-    modal.classList.add('active');
-  };
-
-  window.editPage = (id) => {
-    const page = pages.find(p => p.id === id);
-    if (!page) return;
-    editingId = id;
-    editingType = 'page';
-    modalTitle.textContent = 'Edit Page';
-    modalSlug.style.display = 'block';
-    modalSlug.value = page.slug;
-    modalTitleInput.value = ''; // we don't have title for page
-    modalTitleInput.style.display = 'none';
-    modalContent.value = page.html;
-    modal.classList.add('active');
-  };
-
-  window.deleteNote = async (id) => {
-    if (!confirm('Delete this note?')) return;
-    await api('DELETE', `/api/notes/${id}`);
-    showToast('Note deleted');
-    fetchNotes();
-  };
-
-  window.deletePage = async (id) => {
-    if (!confirm('Delete this page?')) return;
-    await api('DELETE', `/api/pages/${id}`);
-    showToast('Page deleted');
-    fetchPages();
-    fetchApps(); // refresh apps if any
-  };
-
-  // ---------- Modal handlers ----------
-  modalCancel.addEventListener('click', () => modal.classList.remove('active'));
-
-  modalForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const data = {};
-    if (editingType === 'note') {
-      data.title = modalTitleInput.value;
-      data.content = modalContent.value;
-      if (editingId) {
-        await api('PUT', `/api/notes/${editingId}`, data);
-        showToast('Note updated');
-      } else {
-        await api('POST', '/api/notes', data);
-        showToast('Note created');
-      }
-      fetchNotes();
-    } else if (editingType === 'page') {
-      data.slug = modalSlug.value.trim();
-      data.html = modalContent.value;
-      if (!data.slug) { showToast('Slug is required'); return; }
-      if (editingId) {
-        await api('PUT', `/api/pages/${editingId}`, data);
-        showToast('Page updated');
-      } else {
-        await api('POST', '/api/pages', data);
-        showToast('Page created');
-      }
-      fetchPages();
-      fetchApps(); // refresh apps if new page qualifies
-    }
-    modal.classList.remove('active');
-    // reset
-    editingId = null;
-    editingType = null;
-    modalSlug.style.display = 'block';
-    modalTitleInput.style.display = 'block';
-    modalSlug.value = '';
-    modalTitleInput.value = '';
-    modalContent.value = '';
-  });
-
-  addBtn.addEventListener('click', () => {
-    // Add based on current view
-    if (currentView === 'notes') {
-      editingType = 'note';
-      modalTitle.textContent = 'Add Note';
-      modalSlug.style.display = 'none';
-      modalTitleInput.style.display = 'block';
-      modalTitleInput.value = '';
-      modalContent.value = '';
-      modal.classList.add('active');
-    } else if (currentView === 'pages') {
-      editingType = 'page';
-      modalTitle.textContent = 'Add Page';
-      modalSlug.style.display = 'block';
-      modalTitleInput.style.display = 'none';
-      modalSlug.value = '';
-      modalContent.value = '';
-      modal.classList.add('active');
+  // ----- Notes view -----
+  function renderNotes() {
+    const search = searchTerm.toLowerCase().trim();
+    const filtered = notes.filter(n => n.title.toLowerCase().includes(search));
+    let html = '';
+    if (filtered.length === 0) {
+      html = `<div class="empty-state">No notes found. Create one!</div>`;
     } else {
-      showToast('Add new apps by creating pages with app metadata');
+      html = `<div class="item-grid">${filtered.map(n => createNoteCard(n)).join('')}</div>`;
     }
-  });
-
-  // ---------- Navigation ----------
-  function switchView(view) {
-    currentView = view;
-    // Hide all views
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    // Show selected
-    if (view === 'notes') {
-      viewNotes.classList.add('active');
-      renderNotes();
-    } else if (view === 'pages') {
-      viewPages.classList.add('active');
-      renderPages();
-    } else if (view === 'apps') {
-      viewApps.classList.add('active');
-      renderApps();
-    }
-    // Update nav
-    navLinks.forEach(link => {
-      link.classList.toggle('active', link.dataset.view === view);
-    });
-    // Show/hide search
-    searchInput.style.display = view === 'apps' ? 'block' : 'block'; // always show
-    searchInput.placeholder = view === 'apps' ? 'Search apps...' : 'Search...';
-    // Fetch data if needed
-    if (view === 'apps') fetchApps();
-    if (view === 'notes') fetchNotes();
-    if (view === 'pages') fetchPages();
+    contentArea.innerHTML = html;
+    attachCardEvents('note');
   }
 
-  navLinks.forEach(link => {
-    link.addEventListener('click', () => {
-      switchView(link.dataset.view);
+  function createNoteCard(note) {
+    const date = new Date(note.updated_at).toLocaleDateString();
+    return `<div class="item-card" data-type="note" data-id="${note.id}">
+      <div class="title">${escHtml(note.title)}</div>
+      <div class="meta">Updated ${date}</div>
+      <div class="actions">
+        <button class="btn btn-sm edit-btn">Edit</button>
+        <button class="btn btn-sm view-btn">View</button>
+        <button class="btn btn-sm copy-btn">Copy URL</button>
+        <button class="btn btn-sm btn-danger delete-btn">Delete</button>
+      </div>
+    </div>`;
+  }
+
+  // ----- Pages view -----
+  function renderPages() {
+    const search = searchTerm.toLowerCase().trim();
+    const filtered = pages.filter(p => p.title.toLowerCase().includes(search) || p.slug.toLowerCase().includes(search));
+    let html = '';
+    if (filtered.length === 0) {
+      html = `<div class="empty-state">No pages found. Create one!</div>`;
+    } else {
+      html = `<div class="item-grid">${filtered.map(p => createPageCard(p)).join('')}</div>`;
+    }
+    contentArea.innerHTML = html;
+    attachCardEvents('page');
+  }
+
+  function createPageCard(page) {
+    const date = new Date(page.updated_at).toLocaleDateString();
+    return `<div class="item-card" data-type="page" data-id="${page.id}">
+      <div class="title">${escHtml(page.title)}</div>
+      <div class="meta">/${escHtml(page.slug)} · Updated ${date}</div>
+      <div class="actions">
+        <button class="btn btn-sm edit-btn">Edit</button>
+        <button class="btn btn-sm view-btn">View</button>
+        <button class="btn btn-sm copy-btn">Copy URL</button>
+        <button class="btn btn-sm btn-danger delete-btn">Delete</button>
+      </div>
+    </div>`;
+  }
+
+  // ----- App Store view (new) -----
+  function renderAppStore() {
+    const search = searchTerm.toLowerCase().trim();
+    // Extract apps from pages
+    const apps = extractApps(pages);
+    const filtered = apps.filter(app => {
+      const match = app.name.toLowerCase().includes(search) ||
+                    app.slug.toLowerCase().includes(search) ||
+                    (app.description && app.description.toLowerCase().includes(search));
+      return match;
     });
-  });
+    let html = '';
+    if (filtered.length === 0) {
+      html = `<div class="empty-state">No apps found. Make sure your pages contain .app-name and .app-icon.</div>`;
+    } else {
+      html = `<div class="item-grid">${filtered.map(app => createAppCard(app)).join('')}</div>`;
+    }
+    contentArea.innerHTML = html;
+    // Attach open events
+    contentArea.querySelectorAll('.app-open-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const slug = e.target.dataset.slug;
+        if (slug) window.open('/p/' + slug, '_blank');
+      });
+    });
+  }
 
-  // ---------- Search ----------
-  searchInput.addEventListener('input', (e) => {
-    searchTerm = e.target.value.toLowerCase();
-    if (currentView === 'notes') renderNotes();
-    else if (currentView === 'pages') renderPages();
-    else if (currentView === 'apps') renderApps();
-  });
+  function extractApps(pages) {
+    const apps = [];
+    for (const page of pages) {
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(page.html, 'text/html');
+        // Find app name
+        const nameEl = doc.querySelector('.app-name');
+        if (!nameEl) continue;
+        const name = nameEl.textContent.trim();
+        if (!name) continue;
 
-  // ---------- Logout ----------
-  logoutBtn.addEventListener('click', async () => {
-    await api('POST', '/api/logout');
-    window.location.reload(); // will redirect to login if needed
-  });
-
-  // ---------- Init ----------
-  (async function init() {
-    const authenticated = await checkSession();
-    if (!authenticated) {
-      // Simple login form (in case session expired)
-      const loginHtml = \`
-        <div style="max-width:400px; margin: 2rem auto; padding: 2rem; background: #fff; border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-          <h2>Login</h2>
-          <form id="loginForm">
-            <div class="form-group">
-              <label>Username</label>
-              <input type="text" id="loginUser" required />
-            </div>
-            <div class="form-group">
-              <label>Password</label>
-              <input type="password" id="loginPass" required />
-            </div>
-            <button type="submit" class="btn btn-primary">Login</button>
-          </form>
-          <div id="loginError" style="color:red;margin-top:0.5rem;"></div>
-        </div>
-      \`;
-      document.body.innerHTML = loginHtml;
-      document.getElementById('loginForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const username = document.getElementById('loginUser').value;
-        const password = document.getElementById('loginPass').value;
+        // Find app icon
+        const iconEl = doc.querySelector('.app-icon');
+        if (!iconEl) continue;
+        let iconSrc = iconEl.getAttribute('src');
+        if (!iconSrc) continue;
+        // Resolve relative URLs
+        const baseUrl = window.location.origin + '/p/' + page.slug + '/';
         try {
-          const res = await fetch('/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password }),
-            credentials: 'include',
-          });
-          if (res.ok) {
-            window.location.reload();
-          } else {
-            document.getElementById('loginError').textContent = 'Invalid credentials';
+          iconSrc = new URL(iconSrc, baseUrl).href;
+        } catch (_) { /* keep as is */ }
+
+        // Find description (optional)
+        let desc = '';
+        const descEl = doc.querySelector('.app-description');
+        if (descEl) desc = descEl.textContent.trim();
+
+        apps.push({
+          id: page.id,
+          name: name,
+          icon: iconSrc,
+          slug: page.slug,
+          description: desc,
+          updated_at: page.updated_at
+        });
+      } catch (err) {
+        // Silently skip malformed pages
+        console.warn('Skipping page due to parse error:', err);
+      }
+    }
+    // Sort by updated_at descending
+    apps.sort((a, b) => b.updated_at - a.updated_at);
+    return apps;
+  }
+
+  function createAppCard(app) {
+    return `<div class="item-card app-card" data-app-id="${app.id}">
+      <img class="app-icon" src="${escHtml(app.icon)}" alt="${escHtml(app.name)} icon" onerror="this.style.display='none'" />
+      <div class="app-name">${escHtml(app.name)}</div>
+      ${app.description ? `<div class="app-desc">${escHtml(app.description)}</div>` : ''}
+      <div class="app-actions">
+        <button class="btn app-open-btn" data-slug="${escHtml(app.slug)}">Open</button>
+      </div>
+    </div>`;
+  }
+
+  // ----- Shared card event attachment -----
+  function attachCardEvents(type) {
+    contentArea.querySelectorAll('.item-card').forEach(card => {
+      const id = card.dataset.id;
+      // Edit
+      const editBtn = card.querySelector('.edit-btn');
+      if (editBtn) editBtn.addEventListener('click', () => openEdit(type, id));
+      // View
+      const viewBtn = card.querySelector('.view-btn');
+      if (viewBtn) {
+        viewBtn.addEventListener('click', () => {
+          if (type === 'note') window.open('/n/' + id, '_blank');
+          else {
+            const page = pages.find(p => p.id === id);
+            if (page) window.open('/p/' + page.slug, '_blank');
           }
-        } catch {
-          document.getElementById('loginError').textContent = 'Login failed';
+        });
+      }
+      // Copy URL
+      const copyBtn = card.querySelector('.copy-btn');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          let url;
+          if (type === 'note') url = '/n/' + id;
+          else {
+            const page = pages.find(p => p.id === id);
+            url = page ? '/p/' + page.slug : '';
+          }
+          const full = window.location.origin + url;
+          navigator.clipboard.writeText(full).then(() => showToast('URL copied!')).catch(() => {});
+        });
+      }
+      // Delete
+      const deleteBtn = card.querySelector('.delete-btn');
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => {
+          if (confirm('Delete this ' + type + '?')) deleteItem(type, id);
+        });
+      }
+    });
+  }
+
+  function escHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // --- Add button logic (updated) ---
+  function updateAddButton() {
+    if (currentView === 'appstore') {
+      addBtn.style.display = 'none';
+    } else {
+      addBtn.style.display = 'flex';
+    }
+  }
+
+  let addMenuVisible = false;
+  addBtn.addEventListener('click', () => {
+    if (currentView === 'appstore') return;
+    addMenuVisible = !addMenuVisible;
+    addMenu.style.display = addMenuVisible ? 'block' : 'none';
+  });
+  document.addEventListener('click', (e) => {
+    if (!addBtn.contains(e.target) && !addMenu.contains(e.target)) {
+      addMenu.style.display = 'none';
+      addMenuVisible = false;
+    }
+  });
+  addMenu.addEventListener('click', (e) => {
+    const action = e.target.dataset.action;
+    if (action === 'note') openNewNote();
+    else if (action === 'page') openNewPage();
+    addMenu.style.display = 'none';
+    addMenuVisible = false;
+  });
+
+  // --- Search ---
+  searchInput.addEventListener('input', (e) => {
+    searchTerm = e.target.value;
+    render();
+  });
+
+  // --- Navigation tabs ---
+  navTabs.addEventListener('click', (e) => {
+    const tab = e.target.closest('.nav-tab');
+    if (!tab) return;
+    const view = tab.dataset.view;
+    if (view === currentView) return;
+    // Update active class
+    navTabs.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    // Switch view
+    currentView = view;
+    // Reset search term? (optional, we keep it)
+    render();
+  });
+
+  // --- Modal handling (unchanged) ---
+  function openModal(html) {
+    modalContent.innerHTML = html;
+    modalOverlay.classList.add('active');
+    const form = modalContent.querySelector('form');
+    if (form) form.addEventListener('submit', (e) => e.preventDefault());
+    modalOverlay.onclick = (e) => { if (e.target === modalOverlay) closeModal(); };
+    modalContent.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', closeModal));
+  }
+
+  function closeModal() {
+    modalOverlay.classList.remove('active');
+    modalContent.innerHTML = '';
+  }
+
+  // --- New / Edit / Delete (unchanged except minor) ---
+  function openNewNote() {
+    openModal(\`
+      <h2>New Note</h2>
+      <form id="noteForm">
+        <div class="form-group">
+          <label>Title</label>
+          <input type="text" id="noteTitle" required />
+        </div>
+        <div class="form-group">
+          <label>Content</label>
+          <textarea id="noteContent" rows="8" required></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn cancel-btn">Cancel</button>
+          <button type="submit" class="btn" id="saveNoteBtn">Save</button>
+        </div>
+      </form>
+    \`);
+    const form = document.getElementById('noteForm');
+    form.addEventListener('submit', async () => {
+      const title = document.getElementById('noteTitle').value.trim();
+      const content = document.getElementById('noteContent').value.trim();
+      if (!title || !content) { showToast('Title and content required', true); return; }
+      const { res, data } = await apiCall('POST', '/api/notes', { title, content });
+      if (res.ok) { showToast('Note created'); closeModal(); await fetchNotes(); render(); }
+      else { showToast(data.error || 'Failed to create note', true); }
+    });
+  }
+
+  function openNewPage() {
+    openModal(\`
+      <h2>New Page</h2>
+      <form id="pageForm">
+        <div class="form-group">
+          <label>Title</label>
+          <input type="text" id="pageTitle" required />
+        </div>
+        <div class="form-group">
+          <label>Slug</label>
+          <input type="text" id="pageSlug" required pattern="[a-zA-Z0-9\\-]+" />
+          <small style="color:var(--text-secondary);">Letters, numbers, hyphens only.</small>
+        </div>
+        <div class="form-group">
+          <label>HTML</label>
+          <textarea id="pageHtml" rows="10" required></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn preview-btn" id="previewPageBtn">Preview</button>
+          <button type="button" class="btn cancel-btn">Cancel</button>
+          <button type="submit" class="btn" id="savePageBtn">Save</button>
+        </div>
+      </form>
+    \`);
+    const form = document.getElementById('pageForm');
+    form.addEventListener('submit', async () => {
+      const title = document.getElementById('pageTitle').value.trim();
+      const slug = document.getElementById('pageSlug').value.trim();
+      const html = document.getElementById('pageHtml').value.trim();
+      if (!title || !slug || !html) { showToast('All fields required', true); return; }
+      const { res, data } = await apiCall('POST', '/api/pages', { title, slug, html });
+      if (res.ok) { showToast('Page created'); closeModal(); await fetchPages(); render(); }
+      else { showToast(data.error || 'Failed to create page', true); }
+    });
+    document.getElementById('previewPageBtn').addEventListener('click', () => {
+      const slug = document.getElementById('pageSlug').value.trim();
+      if (slug) window.open('/p/' + slug, '_blank');
+      else showToast('Enter a slug first', true);
+    });
+  }
+
+  async function openEdit(type, id) {
+    if (type === 'note') {
+      const note = notes.find(n => n.id === id);
+      if (!note) return;
+      openModal(\`
+        <h2>Edit Note</h2>
+        <form id="noteForm">
+          <div class="form-group">
+            <label>Title</label>
+            <input type="text" id="noteTitle" value="\${escHtml(note.title)}" required />
+          </div>
+          <div class="form-group">
+            <label>Content</label>
+            <textarea id="noteContent" rows="8" required>\${escHtml(note.content)}</textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-danger delete-btn" id="deleteNoteBtn">Delete</button>
+            <button type="button" class="btn cancel-btn">Cancel</button>
+            <button type="submit" class="btn" id="saveNoteBtn">Save</button>
+          </div>
+        </form>
+      \`);
+      const form = document.getElementById('noteForm');
+      form.addEventListener('submit', async () => {
+        const title = document.getElementById('noteTitle').value.trim();
+        const content = document.getElementById('noteContent').value.trim();
+        if (!title || !content) { showToast('Title and content required', true); return; }
+        const { res, data } = await apiCall('PUT', '/api/notes/' + id, { title, content });
+        if (res.ok) { showToast('Note updated'); closeModal(); await fetchNotes(); render(); }
+        else { showToast(data.error || 'Failed to update note', true); }
+      });
+      document.getElementById('deleteNoteBtn').addEventListener('click', async () => {
+        if (confirm('Delete this note?')) {
+          const { res } = await apiCall('DELETE', '/api/notes/' + id);
+          if (res.ok) { showToast('Note deleted'); closeModal(); await fetchNotes(); render(); }
+          else { showToast('Delete failed', true); }
         }
       });
-      return;
+    } else if (type === 'page') {
+      const page = pages.find(p => p.id === id);
+      if (!page) return;
+      openModal(\`
+        <h2>Edit Page</h2>
+        <form id="pageForm">
+          <div class="form-group">
+            <label>Title</label>
+            <input type="text" id="pageTitle" value="\${escHtml(page.title)}" required />
+          </div>
+          <div class="form-group">
+            <label>Slug</label>
+            <input type="text" id="pageSlug" value="\${escHtml(page.slug)}" required pattern="[a-zA-Z0-9\\-]+" />
+            <small style="color:var(--text-secondary);">Letters, numbers, hyphens only.</small>
+          </div>
+          <div class="form-group">
+            <label>HTML</label>
+            <textarea id="pageHtml" rows="10" required>\${escHtml(page.html)}</textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-danger delete-btn" id="deletePageBtn">Delete</button>
+            <button type="button" class="btn preview-btn" id="previewPageBtn">Preview</button>
+            <button type="button" class="btn cancel-btn">Cancel</button>
+            <button type="submit" class="btn" id="savePageBtn">Save</button>
+          </div>
+        </form>
+      \`);
+      const form = document.getElementById('pageForm');
+      form.addEventListener('submit', async () => {
+        const title = document.getElementById('pageTitle').value.trim();
+        const slug = document.getElementById('pageSlug').value.trim();
+        const html = document.getElementById('pageHtml').value.trim();
+        if (!title || !slug || !html) { showToast('All fields required', true); return; }
+        const { res, data } = await apiCall('PUT', '/api/pages/' + id, { title, slug, html });
+        if (res.ok) { showToast('Page updated'); closeModal(); await fetchPages(); render(); }
+        else { showToast(data.error || 'Failed to update page', true); }
+      });
+      document.getElementById('deletePageBtn').addEventListener('click', async () => {
+        if (confirm('Delete this page?')) {
+          const { res } = await apiCall('DELETE', '/api/pages/' + id);
+          if (res.ok) { showToast('Page deleted'); closeModal(); await fetchPages(); render(); }
+          else { showToast('Delete failed', true); }
+        }
+      });
+      document.getElementById('previewPageBtn').addEventListener('click', () => {
+        const slug = document.getElementById('pageSlug').value.trim();
+        if (slug) window.open('/p/' + slug, '_blank');
+        else showToast('Enter a slug first', true);
+      });
     }
-    // Load initial data and show default view
-    await fetchNotes();
-    await fetchPages();
-    await fetchApps();
-    switchView('notes');
-  })();
+  }
+
+  async function deleteItem(type, id) {
+    const endpoint = type === 'note' ? '/api/notes/' + id : '/api/pages/' + id;
+    const { res } = await apiCall('DELETE', endpoint);
+    if (res.ok) {
+      showToast(type + ' deleted');
+      if (type === 'note') { await fetchNotes(); } else { await fetchPages(); }
+      render();
+    } else {
+      showToast('Delete failed', true);
+    }
+  }
+
+  // --- Init ---
+  checkSession();
 </script>
 </body>
 </html>`;
 
-async function serveSPA(request, env) {
-  // If the user is not authenticated, we could serve a login page directly,
-  // but we embedded login in the SPA itself. We'll just serve the SPA.
-  return new Response(INDEX_HTML, {
-    headers: { 'Content-Type': 'text/html' },
+// ============================================================
+//  WORKER HANDLER (unchanged)
+// ============================================================
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
+
+    // API routes
+    if (path.startsWith('/api/')) {
+      return handleApi(request, env, ctx);
+    }
+
+    // Public note view
+    if (path.startsWith('/n/')) {
+      const id = path.slice(3);
+      return handleNoteView(id, env);
+    }
+
+    // Raw note
+    if (path.startsWith('/raw/')) {
+      const id = path.slice(5);
+      return handleRawNote(id, env);
+    }
+
+    // Public page
+    if (path.startsWith('/p/')) {
+      const slug = path.slice(3);
+      return handlePageView(slug, env);
+    }
+
+    // Serve SPA
+    return new Response(INDEX_HTML, {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  },
+};
+
+// ============================================================
+//  HELPERS & API HANDLERS (unchanged)
+// ============================================================
+
+function generateNoteId() {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const array = new Uint8Array(8);
+  crypto.getRandomValues(array);
+  let id = '';
+  for (let i = 0; i < array.length; i++) {
+    id += chars[array[i] % chars.length];
+  }
+  return id;
+}
+
+function generateSessionToken() {
+  return crypto.randomUUID();
+}
+
+async function getSessionFromCookie(request, env) {
+  const cookieHeader = request.headers.get('Cookie') || '';
+  const cookies = Object.fromEntries(
+    cookieHeader.split('; ').map(c => {
+      const [k, ...v] = c.split('=');
+      return [k, v.join('=')];
+    })
+  );
+  const token = cookies.session_token;
+  if (!token) return null;
+  const stmt = env.DB.prepare('SELECT * FROM sessions WHERE token = ? AND expires_at > ?');
+  const session = await stmt.bind(token, Math.floor(Date.now() / 1000)).first();
+  return session;
+}
+
+async function requireAuth(request, env) {
+  const session = await getSessionFromCookie(request, env);
+  if (!session) {
+    throw new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  return session;
+}
+
+function setSessionCookie(token, expiresAt) {
+  const maxAge = Math.max(0, expiresAt - Math.floor(Date.now() / 1000));
+  return `session_token=${token}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${maxAge}`;
+}
+
+function clearSessionCookie() {
+  return 'session_token=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0';
+}
+
+async function handleApi(request, env, ctx) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const method = request.method;
+
+  // Login
+  if (path === '/api/login' && method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const { username, password } = body;
+    const validUser = env.USERNAME || 'Shadow';
+    const validPass = env.PASSWORD;
+    if (!validPass) {
+      return new Response(JSON.stringify({ error: 'Server misconfigured: PASSWORD secret not set' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (username === validUser && password === validPass) {
+      const token = generateSessionToken();
+      const now = Math.floor(Date.now() / 1000);
+      const expiresAt = now + 60 * 60 * 24 * 7;
+      await env.DB.prepare(
+        'INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'
+      ).bind(token, 'shadow', now, expiresAt).run();
+      const cookie = setSessionCookie(token, expiresAt);
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Set-Cookie': cookie,
+        },
+      });
+    } else {
+      return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  }
+
+  // Logout
+  if (path === '/api/logout' && method === 'POST') {
+    const session = await getSessionFromCookie(request, env);
+    if (session) {
+      await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(session.token).run();
+    }
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': clearSessionCookie(),
+      },
+    });
+  }
+
+  // Session check
+  if (path === '/api/session' && method === 'GET') {
+    const session = await getSessionFromCookie(request, env);
+    if (session) {
+      return new Response(JSON.stringify({ authenticated: true, user: 'Shadow' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } else {
+      return new Response(JSON.stringify({ authenticated: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  }
+
+  // All other API endpoints require auth
+  try {
+    await requireAuth(request, env);
+  } catch (err) {
+    return err;
+  }
+
+  // Notes
+  if (path === '/api/notes' && method === 'GET') {
+    const rows = await env.DB.prepare('SELECT * FROM notes ORDER BY updated_at DESC').all();
+    return new Response(JSON.stringify(rows.results), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (path === '/api/notes' && method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const { title, content } = body;
+    if (!title || !content) {
+      return new Response(JSON.stringify({ error: 'Title and content required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const id = generateNoteId();
+    const now = Date.now();
+    await env.DB.prepare(
+      'INSERT INTO notes (id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+    ).bind(id, title, content, now, now).run();
+    const note = await env.DB.prepare('SELECT * FROM notes WHERE id = ?').bind(id).first();
+    return new Response(JSON.stringify(note), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const noteMatch = path.match(/^\/api\/notes\/(.+)$/);
+  if (noteMatch) {
+    const id = noteMatch[1];
+    if (method === 'GET') {
+      const note = await env.DB.prepare('SELECT * FROM notes WHERE id = ?').bind(id).first();
+      if (!note) {
+        return new Response(JSON.stringify({ error: 'Note not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(note), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (method === 'PUT') {
+      const body = await request.json().catch(() => ({}));
+      const { title, content } = body;
+      if (!title || !content) {
+        return new Response(JSON.stringify({ error: 'Title and content required' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const now = Date.now();
+      const result = await env.DB.prepare(
+        'UPDATE notes SET title = ?, content = ?, updated_at = ? WHERE id = ?'
+      ).bind(title, content, now, id).run();
+      if (result.changes === 0) {
+        return new Response(JSON.stringify({ error: 'Note not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const note = await env.DB.prepare('SELECT * FROM notes WHERE id = ?').bind(id).first();
+      return new Response(JSON.stringify(note), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (method === 'DELETE') {
+      const result = await env.DB.prepare('DELETE FROM notes WHERE id = ?').bind(id).run();
+      if (result.changes === 0) {
+        return new Response(JSON.stringify({ error: 'Note not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  }
+
+  // Pages
+  if (path === '/api/pages' && method === 'GET') {
+    const rows = await env.DB.prepare('SELECT * FROM pages ORDER BY updated_at DESC').all();
+    return new Response(JSON.stringify(rows.results), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (path === '/api/pages' && method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const { title, slug, html } = body;
+    if (!title || !slug || !html) {
+      return new Response(JSON.stringify({ error: 'Title, slug, and HTML required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!/^[a-zA-Z0-9\-]+$/.test(slug)) {
+      return new Response(JSON.stringify({ error: 'Slug can only contain letters, numbers, and hyphens' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const existing = await env.DB.prepare('SELECT id FROM pages WHERE slug = ?').bind(slug).first();
+    if (existing) {
+      return new Response(JSON.stringify({ error: 'Slug already in use' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const id = generateNoteId();
+    const now = Date.now();
+    await env.DB.prepare(
+      'INSERT INTO pages (id, title, slug, html, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(id, title, slug, html, now, now).run();
+    const page = await env.DB.prepare('SELECT * FROM pages WHERE id = ?').bind(id).first();
+    return new Response(JSON.stringify(page), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const pageMatch = path.match(/^\/api\/pages\/(.+)$/);
+  if (pageMatch) {
+    const id = pageMatch[1];
+    if (method === 'GET') {
+      const page = await env.DB.prepare('SELECT * FROM pages WHERE id = ?').bind(id).first();
+      if (!page) {
+        return new Response(JSON.stringify({ error: 'Page not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(page), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (method === 'PUT') {
+      const body = await request.json().catch(() => ({}));
+      const { title, slug, html } = body;
+      if (!title || !slug || !html) {
+        return new Response(JSON.stringify({ error: 'Title, slug, and HTML required' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (!/^[a-zA-Z0-9\-]+$/.test(slug)) {
+        return new Response(JSON.stringify({ error: 'Slug can only contain letters, numbers, and hyphens' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const existing = await env.DB.prepare('SELECT id FROM pages WHERE slug = ? AND id != ?').bind(slug, id).first();
+      if (existing) {
+        return new Response(JSON.stringify({ error: 'Slug already in use' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const now = Date.now();
+      const result = await env.DB.prepare(
+        'UPDATE pages SET title = ?, slug = ?, html = ?, updated_at = ? WHERE id = ?'
+      ).bind(title, slug, html, now, id).run();
+      if (result.changes === 0) {
+        return new Response(JSON.stringify({ error: 'Page not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const page = await env.DB.prepare('SELECT * FROM pages WHERE id = ?').bind(id).first();
+      return new Response(JSON.stringify(page), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (method === 'DELETE') {
+      const result = await env.DB.prepare('DELETE FROM pages WHERE id = ?').bind(id).run();
+      if (result.changes === 0) {
+        return new Response(JSON.stringify({ error: 'Page not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  }
+
+  return new Response(JSON.stringify({ error: 'Not found' }), {
+    status: 404,
+    headers: { 'Content-Type': 'application/json' },
   });
 }
 
-// ---------- Database Migration (optional) ----------
-// To be run once to create tables:
-/*
-CREATE TABLE IF NOT EXISTS notes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+// ============================================================
+//  PUBLIC VIEWS (unchanged)
+// ============================================================
 
-CREATE TABLE IF NOT EXISTS pages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  slug TEXT UNIQUE NOT NULL,
-  html TEXT NOT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+async function handleNoteView(id, env) {
+  const note = await env.DB.prepare('SELECT * FROM notes WHERE id = ?').bind(id).first();
+  if (!note) {
+    return new Response('Note not found', { status: 404 });
+  }
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(note.title)}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a202c; }
+    h1 { font-weight: 600; }
+    .content { white-space: pre-wrap; word-wrap: break-word; }
+    hr { margin: 2rem 0; border: 0; border-top: 1px solid #e2e8f0; }
+    .raw-link { color: #5a6acf; text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(note.title)}</h1>
+  <div class="content">${escapeHtml(note.content)}</div>
+  <hr>
+  <a href="/raw/${id}" class="raw-link">View raw text</a>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
 
-CREATE TABLE IF NOT EXISTS sessions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_token TEXT UNIQUE NOT NULL,
-  user_id TEXT NOT NULL,
-  expires_at DATETIME NOT NULL
-);
-*/
+async function handleRawNote(id, env) {
+  const note = await env.DB.prepare('SELECT content FROM notes WHERE id = ?').bind(id).first();
+  if (!note) {
+    return new Response('Note not found', { status: 404 });
+  }
+  return new Response(note.content, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
+}
+
+async function handlePageView(slug, env) {
+  const page = await env.DB.prepare('SELECT html FROM pages WHERE slug = ?').bind(slug).first();
+  if (!page) {
+    return new Response('Page not found', { status: 404 });
+  }
+  return new Response(page.html, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"]/g, function(m) {
+    if (m === '&') return '&amp;';
+    if (m === '<') return '&lt;';
+    if (m === '>') return '&gt;';
+    if (m === '"') return '&quot;';
+    return m;
+  });
+}
