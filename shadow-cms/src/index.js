@@ -3,6 +3,8 @@
 // ============================================================
 
 // -------------------- Embedded index.html (escaped inner backticks) --------------------
+import { handleAppStorePage } from './appstore.js';
+
 const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -980,25 +982,35 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
+    // ---- Public App Store (NEW) ----
+    if (path === '/appstore' && method === 'GET') {
+      return handleAppStorePage(request, env);
+    }
+
+    // ---- API routes ----
     if (path.startsWith('/api/')) {
       return handleApi(request, env, ctx);
     }
 
+    // ---- Public note view ----
     if (path.startsWith('/n/')) {
       const id = path.slice(3);
       return handleNoteView(id, env);
     }
 
+    // ---- Raw note ----
     if (path.startsWith('/raw/')) {
       const id = path.slice(5);
       return handleRawNote(id, env);
     }
 
+    // ---- Public page ----
     if (path.startsWith('/p/')) {
       const slug = path.slice(3);
       return handlePageView(slug, env);
     }
 
+    // ---- SPA (dashboard) ----
     return new Response(INDEX_HTML, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
