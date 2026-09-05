@@ -780,39 +780,39 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
+    // ---- Public App Store (NEW) ----
+    if (path === '/appstore' && method === 'GET') {
+      return handleAppStorePage(request, env);
+    }
+
     // ---- API routes ----
     if (path.startsWith('/api/')) {
-      // App Store endpoint (read-only, requires auth)
       if (path === '/api/apps' && method === 'GET') {
         try {
           await requireAuth(request, env);
         } catch (err) {
-          return err; // 401
+          return err;
         }
         return handleAppStore(request, env);
       }
-
-      // All other API endpoints (existing)
       return handleApi(request, env, ctx);
     }
 
-    // ---- Public routes ----
+    // ---- Public routes (notes, pages) ----
     if (path.startsWith('/n/')) {
       const id = path.slice(3);
       return handleNoteView(id, env);
     }
-
     if (path.startsWith('/raw/')) {
       const id = path.slice(5);
       return handleRawNote(id, env);
     }
-
     if (path.startsWith('/p/')) {
       const slug = path.slice(3);
       return handlePageView(slug, env);
     }
 
-    // ---- SPA ----
+    // ---- SPA fallback ----
     return new Response(INDEX_HTML, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
