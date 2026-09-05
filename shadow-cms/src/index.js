@@ -2,7 +2,7 @@
 //  Cloudflare Worker – Shadow CMS (with App Store)
 // ============================================================
 
-// -------------------- Embedded index.html --------------------
+// -------------------- Embedded index.html (escaped inner backticks) --------------------
 const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -403,7 +403,7 @@ const INDEX_HTML = `<!DOCTYPE html>
       </div>
     </header>
 
-    <!-- Navigation Tabs (new) -->
+    <!-- Navigation Tabs -->
     <div class="nav-tabs" id="navTabs">
       <button class="nav-tab active" data-view="notes">📝 Notes</button>
       <button class="nav-tab" data-view="pages">🌐 Pages</button>
@@ -443,7 +443,7 @@ const INDEX_HTML = `<!DOCTYPE html>
   let notes = [];
   let pages = [];
   let searchTerm = '';
-  let currentView = 'notes'; // 'notes' | 'pages' | 'appstore'
+  let currentView = 'notes';
 
   // --- DOM refs ---
   const $ = (sel) => document.querySelector(sel);
@@ -559,9 +559,9 @@ const INDEX_HTML = `<!DOCTYPE html>
     const filtered = notes.filter(n => n.title.toLowerCase().includes(search));
     let html = '';
     if (filtered.length === 0) {
-      html = `<div class="empty-state">No notes found. Create one!</div>`;
+      html = \`<div class="empty-state">No notes found. Create one!</div>\`;
     } else {
-      html = `<div class="item-grid">${filtered.map(n => createNoteCard(n)).join('')}</div>`;
+      html = \`<div class="item-grid">\${filtered.map(n => createNoteCard(n)).join('')}</div>\`;
     }
     contentArea.innerHTML = html;
     attachCardEvents('note');
@@ -569,16 +569,16 @@ const INDEX_HTML = `<!DOCTYPE html>
 
   function createNoteCard(note) {
     const date = new Date(note.updated_at).toLocaleDateString();
-    return `<div class="item-card" data-type="note" data-id="${note.id}">
-      <div class="title">${escHtml(note.title)}</div>
-      <div class="meta">Updated ${date}</div>
+    return \`<div class="item-card" data-type="note" data-id="\${note.id}">
+      <div class="title">\${escHtml(note.title)}</div>
+      <div class="meta">Updated \${date}</div>
       <div class="actions">
         <button class="btn btn-sm edit-btn">Edit</button>
         <button class="btn btn-sm view-btn">View</button>
         <button class="btn btn-sm copy-btn">Copy URL</button>
         <button class="btn btn-sm btn-danger delete-btn">Delete</button>
       </div>
-    </div>`;
+    </div>\`;
   }
 
   // ----- Pages view -----
@@ -587,9 +587,9 @@ const INDEX_HTML = `<!DOCTYPE html>
     const filtered = pages.filter(p => p.title.toLowerCase().includes(search) || p.slug.toLowerCase().includes(search));
     let html = '';
     if (filtered.length === 0) {
-      html = `<div class="empty-state">No pages found. Create one!</div>`;
+      html = \`<div class="empty-state">No pages found. Create one!</div>\`;
     } else {
-      html = `<div class="item-grid">${filtered.map(p => createPageCard(p)).join('')}</div>`;
+      html = \`<div class="item-grid">\${filtered.map(p => createPageCard(p)).join('')}</div>\`;
     }
     contentArea.innerHTML = html;
     attachCardEvents('page');
@@ -597,22 +597,21 @@ const INDEX_HTML = `<!DOCTYPE html>
 
   function createPageCard(page) {
     const date = new Date(page.updated_at).toLocaleDateString();
-    return `<div class="item-card" data-type="page" data-id="${page.id}">
-      <div class="title">${escHtml(page.title)}</div>
-      <div class="meta">/${escHtml(page.slug)} · Updated ${date}</div>
+    return \`<div class="item-card" data-type="page" data-id="\${page.id}">
+      <div class="title">\${escHtml(page.title)}</div>
+      <div class="meta">/\${escHtml(page.slug)} · Updated \${date}</div>
       <div class="actions">
         <button class="btn btn-sm edit-btn">Edit</button>
         <button class="btn btn-sm view-btn">View</button>
         <button class="btn btn-sm copy-btn">Copy URL</button>
         <button class="btn btn-sm btn-danger delete-btn">Delete</button>
       </div>
-    </div>`;
+    </div>\`;
   }
 
   // ----- App Store view (new) -----
   function renderAppStore() {
     const search = searchTerm.toLowerCase().trim();
-    // Extract apps from pages
     const apps = extractApps(pages);
     const filtered = apps.filter(app => {
       const match = app.name.toLowerCase().includes(search) ||
@@ -622,12 +621,11 @@ const INDEX_HTML = `<!DOCTYPE html>
     });
     let html = '';
     if (filtered.length === 0) {
-      html = `<div class="empty-state">No apps found. Make sure your pages contain .app-name and .app-icon.</div>`;
+      html = \`<div class="empty-state">No apps found. Make sure your pages contain .app-name and .app-icon.</div>\`;
     } else {
-      html = `<div class="item-grid">${filtered.map(app => createAppCard(app)).join('')}</div>`;
+      html = \`<div class="item-grid">\${filtered.map(app => createAppCard(app)).join('')}</div>\`;
     }
     contentArea.innerHTML = html;
-    // Attach open events
     contentArea.querySelectorAll('.app-open-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const slug = e.target.dataset.slug;
@@ -642,65 +640,57 @@ const INDEX_HTML = `<!DOCTYPE html>
       try {
         const parser = new DOMParser();
         const doc = parser.parseFromString(page.html, 'text/html');
-        // Find app name
         const nameEl = doc.querySelector('.app-name');
         if (!nameEl) continue;
         const name = nameEl.textContent.trim();
         if (!name) continue;
 
-        // Find app icon
         const iconEl = doc.querySelector('.app-icon');
         if (!iconEl) continue;
         let iconSrc = iconEl.getAttribute('src');
         if (!iconSrc) continue;
-        // Resolve relative URLs
         const baseUrl = window.location.origin + '/p/' + page.slug + '/';
         try {
           iconSrc = new URL(iconSrc, baseUrl).href;
-        } catch (_) { /* keep as is */ }
+        } catch (_) {}
 
-        // Find description (optional)
         let desc = '';
         const descEl = doc.querySelector('.app-description');
         if (descEl) desc = descEl.textContent.trim();
 
         apps.push({
           id: page.id,
-          name: name,
+          name,
           icon: iconSrc,
           slug: page.slug,
           description: desc,
           updated_at: page.updated_at
         });
       } catch (err) {
-        // Silently skip malformed pages
         console.warn('Skipping page due to parse error:', err);
       }
     }
-    // Sort by updated_at descending
     apps.sort((a, b) => b.updated_at - a.updated_at);
     return apps;
   }
 
   function createAppCard(app) {
-    return `<div class="item-card app-card" data-app-id="${app.id}">
-      <img class="app-icon" src="${escHtml(app.icon)}" alt="${escHtml(app.name)} icon" onerror="this.style.display='none'" />
-      <div class="app-name">${escHtml(app.name)}</div>
-      ${app.description ? `<div class="app-desc">${escHtml(app.description)}</div>` : ''}
+    return \`<div class="item-card app-card" data-app-id="\${app.id}">
+      <img class="app-icon" src="\${escHtml(app.icon)}" alt="\${escHtml(app.name)} icon" onerror="this.style.display='none'" />
+      <div class="app-name">\${escHtml(app.name)}</div>
+      \${app.description ? \`<div class="app-desc">\${escHtml(app.description)}</div>\` : ''}
       <div class="app-actions">
-        <button class="btn app-open-btn" data-slug="${escHtml(app.slug)}">Open</button>
+        <button class="btn app-open-btn" data-slug="\${escHtml(app.slug)}">Open</button>
       </div>
-    </div>`;
+    </div>\`;
   }
 
   // ----- Shared card event attachment -----
   function attachCardEvents(type) {
     contentArea.querySelectorAll('.item-card').forEach(card => {
       const id = card.dataset.id;
-      // Edit
       const editBtn = card.querySelector('.edit-btn');
       if (editBtn) editBtn.addEventListener('click', () => openEdit(type, id));
-      // View
       const viewBtn = card.querySelector('.view-btn');
       if (viewBtn) {
         viewBtn.addEventListener('click', () => {
@@ -711,7 +701,6 @@ const INDEX_HTML = `<!DOCTYPE html>
           }
         });
       }
-      // Copy URL
       const copyBtn = card.querySelector('.copy-btn');
       if (copyBtn) {
         copyBtn.addEventListener('click', () => {
@@ -725,7 +714,6 @@ const INDEX_HTML = `<!DOCTYPE html>
           navigator.clipboard.writeText(full).then(() => showToast('URL copied!')).catch(() => {});
         });
       }
-      // Delete
       const deleteBtn = card.querySelector('.delete-btn');
       if (deleteBtn) {
         deleteBtn.addEventListener('click', () => {
@@ -782,12 +770,9 @@ const INDEX_HTML = `<!DOCTYPE html>
     if (!tab) return;
     const view = tab.dataset.view;
     if (view === currentView) return;
-    // Update active class
     navTabs.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
-    // Switch view
     currentView = view;
-    // Reset search term? (optional, we keep it)
     render();
   });
 
@@ -995,30 +980,25 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
-    // API routes
     if (path.startsWith('/api/')) {
       return handleApi(request, env, ctx);
     }
 
-    // Public note view
     if (path.startsWith('/n/')) {
       const id = path.slice(3);
       return handleNoteView(id, env);
     }
 
-    // Raw note
     if (path.startsWith('/raw/')) {
       const id = path.slice(5);
       return handleRawNote(id, env);
     }
 
-    // Public page
     if (path.startsWith('/p/')) {
       const slug = path.slice(3);
       return handlePageView(slug, env);
     }
 
-    // Serve SPA
     return new Response(INDEX_HTML, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
