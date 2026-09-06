@@ -3,17 +3,12 @@
 //  Handles /appstore with multi-app extraction
 // ============================================================
 
-/**
- * Public App Store page handler – returns a complete HTML page.
- */
 export async function handleAppStorePage(request, env) {
   try {
-    // Fetch all pages from D1
     const { results: pages } = await env.DB.prepare(
       'SELECT slug, html, updated_at FROM pages ORDER BY updated_at DESC'
     ).all();
 
-    // Extract all apps from all pages
     const allApps = [];
     for (const page of pages) {
       const apps = extractAppsFromPage(page.html, page.slug);
@@ -26,10 +21,7 @@ export async function handleAppStorePage(request, env) {
       }
     }
 
-    // Sort by updated_at descending (newest first)
     allApps.sort((a, b) => b.updated_at - a.updated_at);
-
-    // Build and return HTML page
     const html = buildAppStorePage(allApps);
     return new Response(html, {
       status: 200,
@@ -43,130 +35,112 @@ export async function handleAppStorePage(request, env) {
   }
 }
 
-// -------------------- Parser: extract multiple apps from a page --------------------
+// -------------------- Main Parser --------------------
 function extractAppsFromPage(html, slug) {
   if (!html || typeof html !== 'string') return [];
   const results = [];
 
-  // ---- STEP 1: Find all <a class="card"> elements ----
-  // This regex matches <a> tags that contain class="card" (any attribute order)
-  const cardTagRegex = /<a[^>]*class\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
+  // 1️⃣ Multiple apps: <a class="card"> ... </a>
+  const cardRegex = /<a[^>]*class\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
-  while ((match = cardTagRegex.exec(html)) !== null) {
-    const cardContent = match[1]; // inner HTML of the <a> tag
+  while ((match = cardRegex.exec(html)) !== null) {
+    const cardContent = match[1];
+    const fullTag = html.substring(match.index, match.index + match[0].length);
+    const hrefMatch = fullTag.match(/<a[^>]*href\s*=\s*["']([^"']*)["']/i);
+    const href = hrefMatch ? hrefMatch[1].trim() : '';
 
-    // Extract href from the <a> tag itself (we need the full tag)
-    // We have the full tag from the original match, but we can re-extract href from the cardContent? 
-    // Actually we need the href from the <a> tag, not from inside. Better to capture the whole tag.
-    // Let's re-match the entire tag with a simpler regex that includes href.
-    const fullTagMatch = html.substring(match.index, match.index + match[0].length).match(/<a[^>]*href\s*=\s*["']([^"']*)["']/i);
-    const href = fullTagMatch ? fullTagMatch[1].trim() : '';
-
-    // Extract icon from inner content
     const iconMatch = cardContent.match(/<img[^>]*src\s*=\s*["']([^"']*)["']/i);
     let icon = iconMatch ? iconMatch[1].trim() : '';
 
-    // Extract name from <h2> – remove nested <span class="tag">
     const h2Match = cardContent.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
     if (!h2Match) continue;
-
     let nameHtml = h2Match[1].trim();
     let tag = '';
-
-    // Remove .tag content from name
     const tagMatch = nameHtml.match(/<span[^>]*class\s*=\s*["'][^"']*\btag\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
     if (tagMatch) {
       tag = tagMatch[1].trim();
       nameHtml = nameHtml.replace(/<span[^>]*class\s*=\s*["'][^"']*\btag\b[^"']*["'][^>]*>[\s\S]*?<\/span>/i, '');
     }
-
     const name = nameHtml.trim();
     if (!name) continue;
 
-    // Extract description from <span class="desc">
     const descMatch = cardContent.match(/<span[^>]*class\s*=\s*["'][^"']*\bdesc\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
     const description = descMatch ? descMatch[1].trim() : '';
 
-    // Resolve icon URL
     const resolvedIcon = resolveIconUrl(icon, slug);
-
-    // Determine anchor (fragment from href)
     let anchor = '';
-    if (href.startsWith('#')) {
-      anchor = href.slice(1);
-    }
+    if (href.startsWith('#')) anchor = href.slice(1);
 
-    results.push({
-      name,
-      icon: resolvedIcon,
-      description,
-      tag,
-      anchor,
-    });
+    results.push({ name, icon: resolvedIcon, description, tag, anchor });
   }
 
-  // If cards found, return them
-  if (results.length > 0) {
-    return results;
-  }
+  if (results.length > 0) return results;
 
-  // ---- STEP 2: Fallback to single-app conventions ----
+  // 2️⃣ Single app – try multiple patterns
   const single = extractSingleApp(html, slug);
   return single ? [single] : [];
 }
 
+// -------------------- Single‑App Extraction (with multiple patterns) --------------------
 function extractSingleApp(html, slug) {
-  // data-* convention
-  const dataAppRegex = /<[^>]*\s+data-app\s+[^>]*>/i;
-  if (dataAppRegex.test(html)) {
-    const nameMatch = html.match(/data-app-name\s*=\s*["']([^"']*)["']/i);
-    const iconMatch = html.match(/data-app-icon\s*=\s*["']([^"']*)["']/i);
-    const descMatch = html.match(/data-app-description\s*=\s*["']([^"']*)["']/i);
-    const name = nameMatch ? nameMatch[1].trim() : '';
-    let icon = iconMatch ? iconMatch[1].trim() : '';
-    const description = descMatch ? descMatch[1].trim() : '';
-    if (name && icon) {
-      return {
-        name,
-        icon: resolveIconUrl(icon, slug),
-        description,
-        tag: '',
-        anchor: '',
-      };
+  // List of patterns to try in order
+  const patterns = [
+    // data-* convention
+    {
+      test: /<[^>]*\s+data-app\s+[^>]*>/i,
+      name: /data-app-name\s*=\s*["']([^"']*)["']/i,
+      icon: /data-app-icon\s*=\s*["']([^"']*)["']/i,
+      desc: /data-app-description\s*=\s*["']([^"']*)["']/i,
+    },
+    // .app-name / .app-icon
+    {
+      test: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-name\b[^"']*["'][^>]*>/i,
+      name: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-name\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
+      icon: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-icon\b[^"']*["'][^>]*src\s*=\s*["']([^"']*)["']/i,
+      desc: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-description\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
+    },
+    // .detail-title / .detail-icon (your new page)
+    {
+      test: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-title\b[^"']*["'][^>]*>/i,
+      name: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-title\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
+      icon: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-icon\b[^"']*["'][^>]*src\s*=\s*["']([^"']*)["']/i,
+      desc: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-tagline\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
+    },
+    // Add more patterns here if needed
+  ];
+
+  for (const p of patterns) {
+    if (p.test && p.test.test(html)) {
+      const nameMatch = html.match(p.name);
+      const iconMatch = html.match(p.icon);
+      if (nameMatch && iconMatch) {
+        const name = nameMatch[1].trim();
+        let icon = iconMatch[1].trim();
+        const descMatch = html.match(p.desc);
+        const description = descMatch ? descMatch[1].trim() : '';
+        if (name && icon) {
+          return {
+            name,
+            icon: resolveIconUrl(icon, slug),
+            description,
+            tag: '',
+            anchor: '',
+          };
+        }
+      }
     }
   }
-
-  // class-based (.app-name, .app-icon, .app-description)
-  const nameRegex = /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-name\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i;
-  const iconRegex = /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-icon\b[^"']*["'][^>]*src\s*=\s*["']([^"']*)["']/i;
-  const descRegex = /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-description\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i;
-  const nameMatch2 = html.match(nameRegex);
-  const iconMatch2 = html.match(iconRegex);
-  const descMatch2 = html.match(descRegex);
-  const name2 = nameMatch2 ? nameMatch2[1].trim() : '';
-  let icon2 = iconMatch2 ? iconMatch2[1].trim() : '';
-  const description2 = descMatch2 ? descMatch2[1].trim() : '';
-  if (name2 && icon2) {
-    return {
-      name: name2,
-      icon: resolveIconUrl(icon2, slug),
-      description: description2,
-      tag: '',
-      anchor: '',
-    };
-  }
-
   return null;
 }
 
 function resolveIconUrl(icon, slug) {
   if (!icon) return '';
   if (/^https?:\/\//i.test(icon)) return icon;
-  if (icon.startsWith('/')) return icon; // root-relative
-  return `/p/${slug}/${icon}`; // relative to page
+  if (icon.startsWith('/')) return icon;
+  return `/p/${slug}/${icon}`;
 }
 
-// -------------------- Build the HTML page --------------------
+// -------------------- Build HTML page (unchanged, but included) --------------------
 function buildAppStorePage(apps) {
   const esc = (str) => {
     if (!str) return '';
