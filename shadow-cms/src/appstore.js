@@ -1,6 +1,5 @@
 // ============================================================
-//  appstore.js – Shadow CMS Public App Store
-//  Handles /appstore with multi-app extraction
+//  appstore.js – Shadow CMS Public App Store (Flexible Parser)
 // ============================================================
 
 export async function handleAppStorePage(request, env) {
@@ -29,18 +28,16 @@ export async function handleAppStorePage(request, env) {
     });
   } catch (err) {
     console.error('App Store error:', err);
-    return new Response('Sorry, the App Store is temporarily unavailable.', {
-      status: 500,
-    });
+    return new Response('App Store temporarily unavailable.', { status: 500 });
   }
 }
 
-// -------------------- Main Parser --------------------
+// ----- Super Flexible Parser -----
 function extractAppsFromPage(html, slug) {
   if (!html || typeof html !== 'string') return [];
   const results = [];
 
-  // 1️⃣ Multiple apps: <a class="card"> ... </a>
+  // 1️⃣ Try .card (multiple apps)
   const cardRegex = /<a[^>]*class\s*=\s*["'][^"']*\bcard\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = cardRegex.exec(html)) !== null) {
@@ -48,10 +45,8 @@ function extractAppsFromPage(html, slug) {
     const fullTag = html.substring(match.index, match.index + match[0].length);
     const hrefMatch = fullTag.match(/<a[^>]*href\s*=\s*["']([^"']*)["']/i);
     const href = hrefMatch ? hrefMatch[1].trim() : '';
-
     const iconMatch = cardContent.match(/<img[^>]*src\s*=\s*["']([^"']*)["']/i);
     let icon = iconMatch ? iconMatch[1].trim() : '';
-
     const h2Match = cardContent.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
     if (!h2Match) continue;
     let nameHtml = h2Match[1].trim();
@@ -63,74 +58,54 @@ function extractAppsFromPage(html, slug) {
     }
     const name = nameHtml.trim();
     if (!name) continue;
-
     const descMatch = cardContent.match(/<span[^>]*class\s*=\s*["'][^"']*\bdesc\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
     const description = descMatch ? descMatch[1].trim() : '';
-
     const resolvedIcon = resolveIconUrl(icon, slug);
     let anchor = '';
     if (href.startsWith('#')) anchor = href.slice(1);
-
     results.push({ name, icon: resolvedIcon, description, tag, anchor });
   }
-
   if (results.length > 0) return results;
 
-  // 2️⃣ Single app – try multiple patterns
-  const single = extractSingleApp(html, slug);
-  return single ? [single] : [];
-}
-
-// -------------------- Single‑App Extraction (with multiple patterns) --------------------
-function extractSingleApp(html, slug) {
-  // List of patterns to try in order
+  // 2️⃣ Single app - try multiple class patterns
   const patterns = [
-    // data-* convention
-    {
-      test: /<[^>]*\s+data-app\s+[^>]*>/i,
-      name: /data-app-name\s*=\s*["']([^"']*)["']/i,
-      icon: /data-app-icon\s*=\s*["']([^"']*)["']/i,
-      desc: /data-app-description\s*=\s*["']([^"']*)["']/i,
-    },
-    // .app-name / .app-icon
-    {
-      test: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-name\b[^"']*["'][^>]*>/i,
-      name: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-name\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
-      icon: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-icon\b[^"']*["'][^>]*src\s*=\s*["']([^"']*)["']/i,
-      desc: /<[^>]*\bclass\s*=\s*["'][^"']*\bapp-description\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
-    },
-    // .detail-title / .detail-icon (your new page)
-    {
-      test: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-title\b[^"']*["'][^>]*>/i,
-      name: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-title\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
-      icon: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-icon\b[^"']*["'][^>]*src\s*=\s*["']([^"']*)["']/i,
-      desc: /<[^>]*\bclass\s*=\s*["'][^"']*\bdetail-tagline\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
-    },
-    // Add more patterns here if needed
+    { name: /<[^>]*class\s*=\s*["'][^"']*\bapp-name\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i, 
+      icon: /<[^>]*class\s*=\s*["'][^"']*\bapp-icon\b[^"']*["'][^>]*src\s*=\s*["']([^"']*)["']/i,
+      desc: /<[^>]*class\s*=\s*["'][^"']*\bapp-description\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i },
+    { name: /<[^>]*class\s*=\s*["'][^"']*\bdetail-title\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i,
+      icon: /<[^>]*class\s*=\s*["'][^"']*\bdetail-icon\b[^"']*["'][^>]*src\s*=\s*["']([^"']*)["']/i,
+      desc: /<[^>]*class\s*=\s*["'][^"']*\bdetail-tagline\b[^"']*["'][^>]*>([^<]*)<\/[^>]*>/i },
   ];
 
   for (const p of patterns) {
-    if (p.test && p.test.test(html)) {
-      const nameMatch = html.match(p.name);
-      const iconMatch = html.match(p.icon);
-      if (nameMatch && iconMatch) {
-        const name = nameMatch[1].trim();
-        let icon = iconMatch[1].trim();
-        const descMatch = html.match(p.desc);
-        const description = descMatch ? descMatch[1].trim() : '';
-        if (name && icon) {
-          return {
-            name,
-            icon: resolveIconUrl(icon, slug),
-            description,
-            tag: '',
-            anchor: '',
-          };
-        }
+    const nameMatch = html.match(p.name);
+    const iconMatch = html.match(p.icon);
+    if (nameMatch && iconMatch) {
+      const name = nameMatch[1].trim();
+      let icon = iconMatch[1].trim();
+      const descMatch = html.match(p.desc);
+      const description = descMatch ? descMatch[1].trim() : '';
+      if (name && icon) {
+        return [{ name, icon: resolveIconUrl(icon, slug), description, tag: '', anchor: '' }];
       }
     }
   }
-  return null;
+
+  // 3️⃣ FALLBACK – किसी भी <img> और <h1>/<h2>/<h3> को ढूंढो
+  const imgMatch = html.match(/<img[^>]*src\s*=\s*["']([^"']*)["']/i);
+  const headingMatch = html.match(/<h[1-3][^>]*>([^<]*)<\/h[1-3]>/i);
+  if (imgMatch && headingMatch) {
+    const icon = imgMatch[1].trim();
+    const name = headingMatch[1].trim();
+    if (name && icon) {
+      // description: page ke first <p> ya <div> ka content
+      const descMatch = html.match(/<(?:p|div)[^>]*>([^<]*)<\/(?:p|div)>/i);
+      const description = descMatch ? descMatch[1].trim() : '';
+      return [{ name, icon: resolveIconUrl(icon, slug), description, tag: '', anchor: '' }];
+    }
+  }
+
+  return [];
 }
 
 function resolveIconUrl(icon, slug) {
@@ -140,7 +115,7 @@ function resolveIconUrl(icon, slug) {
   return `/p/${slug}/${icon}`;
 }
 
-// -------------------- Build HTML page (unchanged, but included) --------------------
+// ----- HTML page builder (same as before, included) -----
 function buildAppStorePage(apps) {
   const esc = (str) => {
     if (!str) return '';
