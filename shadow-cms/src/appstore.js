@@ -126,7 +126,7 @@ function buildAppStorePage(apps) {
 
   let cardsHtml = '';
   if (apps.length === 0) {
-    cardsHtml = `<div class="empty-state">No apps found. Check back later!</div>`;
+    cardsHtml = `<div class="empty-state"><span>📭</span> No apps found. Check back later!</div>`;
   } else {
     cardsHtml = apps.map(app => {
       const icon = app.icon || '';
@@ -142,7 +142,7 @@ function buildAppStorePage(apps) {
           ${tag}
           ${desc ? `<div class="app-desc">${desc}</div>` : ''}
         </div>
-        <div class="app-action"><span class="install-btn">Install</span></div>
+        <div class="app-action"><span class="install-btn">Open</span></div>
       </a>`;
     }).join('');
   }
@@ -177,7 +177,7 @@ function buildAppStorePage(apps) {
       background-image: radial-gradient(circle at 20% 30%, #1a2030 0%, var(--bg-base) 70%);
     }
 
-    /* ----- Header ----- */
+    /* ----- Header (Play Store style) ----- */
     .app-store-header {
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border-color);
@@ -249,7 +249,7 @@ function buildAppStorePage(apps) {
       padding: 24px 16px;
     }
 
-    /* ----- Category Chips (optional) ----- */
+    /* ----- Categories (optional) ----- */
     .categories {
       display: flex;
       gap: 10px;
