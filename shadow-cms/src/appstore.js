@@ -925,7 +925,8 @@ window.__APPS__ = ${appsJson};
         if (c === strCh) inStr = false;
         continue;
       }
-      if (c === '"' || c === "'" || c === '`') { inStr = true; strCh = c; continue; }
+      var BT = String.fromCharCode(96);
+if (c === '"' || c === "'" || c === BT) { inStr = true; strCh = c; continue; }
       if (c === open) depth++;
       else if (c === close) { depth--; if (depth === 0) return i; }
     }
