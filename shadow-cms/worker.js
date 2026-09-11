@@ -4,6 +4,14 @@
 
 import { handleAppStore } from './appstore.js';
 
+// -------------------- CORS Headers --------------------
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+  'Access-Control-Max-Age': '86400',
+};
+
 // -------------------- Embedded index.html (SPA) --------------------
 const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -12,7 +20,6 @@ const INDEX_HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Shadow CMS</title>
   <style>
-    /* ----- CSS Reset & Variables (unchanged) ----- */
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg: #f6f9fc;
@@ -40,7 +47,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     }
     #app { max-width: 1200px; width: 100%; }
 
-    /* ----- Login (unchanged) ----- */
     #login-section {
       max-width: 400px;
       margin: 10vh auto;
@@ -108,7 +114,6 @@ const INDEX_HTML = `<!DOCTYPE html>
       font-size: 0.9rem;
     }
 
-    /* ----- Dashboard ----- */
     #dashboard-section { display: none; }
 
     .dashboard-header {
@@ -160,7 +165,6 @@ const INDEX_HTML = `<!DOCTYPE html>
       border-color: var(--danger);
     }
 
-    /* ----- Navigation Tabs (new) ----- */
     .nav-tabs {
       display: flex;
       gap: 0.5rem;
@@ -185,7 +189,6 @@ const INDEX_HTML = `<!DOCTYPE html>
       background: #eef1ff;
     }
 
-    /* ----- Search ----- */
     .search-bar { margin-bottom: 1.5rem; }
     .search-bar input {
       width: 100%;
@@ -196,7 +199,6 @@ const INDEX_HTML = `<!DOCTYPE html>
       font-size: 1rem;
     }
 
-    /* ----- Content sections ----- */
     .content-section { margin-bottom: 2.5rem; }
     .content-section h2 {
       font-size: 1.3rem;
@@ -244,7 +246,6 @@ const INDEX_HTML = `<!DOCTYPE html>
       font-style: italic;
     }
 
-    /* ----- App Store specific styles (new) ----- */
     .app-card {
       display: flex;
       flex-direction: column;
@@ -278,7 +279,6 @@ const INDEX_HTML = `<!DOCTYPE html>
       width: 100%;
     }
 
-    /* ----- Modals (unchanged) ----- */
     .modal-overlay {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -342,7 +342,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     .modal .modal-actions .btn-danger { margin-right: auto; }
     .preview-btn { margin-right: auto; }
 
-    /* ----- Toast (unchanged) ----- */
     .toast-container {
       position: fixed;
       bottom: 2rem;
@@ -365,7 +364,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     .toast.error { background: var(--danger); }
     @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* ----- Responsive ----- */
     @media (max-width: 640px) {
       .dashboard-header { flex-direction: column; align-items: stretch; }
       .header-actions { justify-content: flex-end; }
@@ -377,7 +375,6 @@ const INDEX_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <div id="app">
-  <!-- Login Section -->
   <section id="login-section">
     <h1>🔐 Shadow CMS</h1>
     <form id="login-form">
@@ -394,7 +391,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     </form>
   </section>
 
-  <!-- Dashboard -->
   <section id="dashboard-section">
     <header class="dashboard-header">
       <h1>📝 Shadow CMS</h1>
@@ -404,7 +400,6 @@ const INDEX_HTML = `<!DOCTYPE html>
       </div>
     </header>
 
-    <!-- Navigation Tabs -->
     <div class="nav-tabs" id="navTabs">
       <button class="nav-tab active" data-view="notes">📝 Notes</button>
       <button class="nav-tab" data-view="pages">🌐 Pages</button>
@@ -415,39 +410,29 @@ const INDEX_HTML = `<!DOCTYPE html>
       <input type="text" id="searchInput" placeholder="Search..." />
     </div>
 
-    <!-- Dynamic content area -->
     <div id="contentArea"></div>
   </section>
 
-  <!-- Add Menu (floating) -->
   <div id="addMenu" style="display:none; position:fixed; bottom:6rem; right:2rem; background:var(--card); border-radius:var(--radius); box-shadow:0 8px 24px rgba(0,0,0,0.15); padding:0.5rem; z-index:500;">
     <button class="btn btn-block" style="border-radius:6px; margin-bottom:0.3rem;" data-action="note">📝 New Note</button>
     <button class="btn btn-block" style="border-radius:6px;" data-action="page">🌐 New Page</button>
   </div>
 
-  <!-- Modals -->
   <div class="modal-overlay" id="modalOverlay">
     <div class="modal" id="modalContent"></div>
   </div>
 
-  <!-- Toast container -->
   <div class="toast-container" id="toastContainer"></div>
 </div>
 
 <script>
-  // ============================================================
-  //  FRONTEND – Vanilla JS SPA (with App Store fetching from /api/apps)
-  // ============================================================
-
-  // --- State ---
   let currentUser = null;
   let notes = [];
   let pages = [];
-  let apps = [];           // stores app list from /api/apps
+  let apps = [];
   let searchTerm = '';
   let currentView = 'notes';
 
-  // --- DOM refs ---
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -465,7 +450,6 @@ const INDEX_HTML = `<!DOCTYPE html>
   const modalContent = $('#modalContent');
   const toastContainer = $('#toastContainer');
 
-  // --- API helpers (unchanged) ---
   async function apiCall(method, path, body) {
     const opts = {
       method,
@@ -486,7 +470,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     setTimeout(() => { toast.remove(); }, 3000);
   }
 
-  // --- Authentication (unchanged) ---
   async function checkSession() {
     const { res, data } = await apiCall('GET', '/api/session');
     if (res.ok && data.authenticated) {
@@ -530,7 +513,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     showToast('Logged out');
   });
 
-  // --- Data fetching ---
   async function fetchAllData() {
     await Promise.all([fetchNotes(), fetchPages(), fetchApps()]);
     render();
@@ -551,7 +533,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     if (res.ok) { apps = data; } else { apps = []; showToast('Failed to load apps', true); }
   }
 
-  // --- Rendering ---
   function render() {
     const view = currentView;
     if (view === 'notes') renderNotes();
@@ -560,7 +541,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     updateAddButton();
   }
 
-  // ----- Notes view (unchanged) -----
   function renderNotes() {
     const search = searchTerm.toLowerCase().trim();
     const filtered = notes.filter(n => n.title.toLowerCase().includes(search));
@@ -588,7 +568,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     </div>\`;
   }
 
-  // ----- Pages view (unchanged) -----
   function renderPages() {
     const search = searchTerm.toLowerCase().trim();
     const filtered = pages.filter(p => p.title.toLowerCase().includes(search) || p.slug.toLowerCase().includes(search));
@@ -616,7 +595,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     </div>\`;
   }
 
-  // ----- App Store view (new) – fetches from /api/apps -----
   function renderAppStore() {
     const search = searchTerm.toLowerCase().trim();
     const filtered = apps.filter(app => {
@@ -652,7 +630,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     </div>\`;
   }
 
-  // ----- Shared card event attachment (unchanged) -----
   function attachCardEvents(type) {
     contentArea.querySelectorAll('.item-card').forEach(card => {
       const id = card.dataset.id;
@@ -696,7 +673,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     return div.innerHTML;
   }
 
-  // --- Add button logic (unchanged) ---
   function updateAddButton() {
     if (currentView === 'appstore') {
       addBtn.style.display = 'none';
@@ -725,13 +701,11 @@ const INDEX_HTML = `<!DOCTYPE html>
     addMenuVisible = false;
   });
 
-  // --- Search ---
   searchInput.addEventListener('input', (e) => {
     searchTerm = e.target.value;
     render();
   });
 
-  // --- Navigation tabs ---
   navTabs.addEventListener('click', (e) => {
     const tab = e.target.closest('.nav-tab');
     if (!tab) return;
@@ -743,7 +717,6 @@ const INDEX_HTML = `<!DOCTYPE html>
     render();
   });
 
-  // --- Modal handling (unchanged) ---
   function openModal(html) {
     modalContent.innerHTML = html;
     modalOverlay.classList.add('active');
@@ -758,20 +731,18 @@ const INDEX_HTML = `<!DOCTYPE html>
     modalContent.innerHTML = '';
   }
 
-  // --- New / Edit / Delete (unchanged) ---
   function openNewNote() { /* ... same as before ... */ }
   function openNewPage() { /* ... same as before ... */ }
   async function openEdit(type, id) { /* ... same as before ... */ }
   async function deleteItem(type, id) { /* ... same as before ... */ }
 
-  // --- Init ---
   checkSession();
 </script>
 </body>
 </html>`;
 
 // ============================================================
-//  WORKER HANDLER
+//  WORKER HANDLER (With CORS & Public API Access)
 // ============================================================
 
 export default {
@@ -780,47 +751,56 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
-    // ---- Public App Store (NEW) ----
+    // 1. Handle CORS Preflight (OPTIONS request)
+    if (method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders,
+      });
+    }
+
+    let response;
+
+    // 2. Public App Store Endpoints (CORS enabled & Auth free)
     if (path === '/appstore' && method === 'GET') {
-      return handleAppStorePage(request, env);
-    }
-
-    // ---- API routes ----
-    if (path.startsWith('/api/')) {
-      if (path === '/api/apps' && method === 'GET') {
-        try {
-          await requireAuth(request, env);
-        } catch (err) {
-          return err;
-        }
-        return handleAppStore(request, env);
-      }
-      return handleApi(request, env, ctx);
-    }
-
-    // ---- Public routes (notes, pages) ----
-    if (path.startsWith('/n/')) {
+      response = await handleAppStorePage(request, env);
+    } else if (path === '/api/apps' && method === 'GET') {
+      // ModStore frontend ko public read access chahiye
+      response = await handleAppStore(request, env);
+    } else if (path.startsWith('/api/')) {
+      response = await handleApi(request, env, ctx);
+    } else if (path.startsWith('/n/')) {
       const id = path.slice(3);
-      return handleNoteView(id, env);
-    }
-    if (path.startsWith('/raw/')) {
+      response = await handleNoteView(id, env);
+    } else if (path.startsWith('/raw/')) {
       const id = path.slice(5);
-      return handleRawNote(id, env);
-    }
-    if (path.startsWith('/p/')) {
+      response = await handleRawNote(id, env);
+    } else if (path.startsWith('/p/')) {
       const slug = path.slice(3);
-      return handlePageView(slug, env);
+      response = await handlePageView(slug, env);
+    } else {
+      // SPA fallback
+      response = new Response(INDEX_HTML, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
     }
 
-    // ---- SPA fallback ----
-    return new Response(INDEX_HTML, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    // 3. Attach CORS headers to response
+    const newHeaders = new Headers(response.headers);
+    Object.entries(corsHeaders).forEach(([key, val]) => {
+      newHeaders.set(key, val);
+    });
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: newHeaders,
     });
   },
 };
 
 // ============================================================
-//  HELPERS & API HANDLERS (existing, unchanged)
+//  HELPERS & API HANDLERS
 // ============================================================
 
 function generateNoteId() {
@@ -1156,8 +1136,14 @@ async function handleApi(request, env, ctx) {
 }
 
 // ============================================================
-//  PUBLIC VIEWS (unchanged)
+//  PUBLIC VIEWS
 // ============================================================
+
+async function handleAppStorePage(request, env) {
+  // Agar appstore.js me alag page render function hai toh call karega
+  const appsRes = await handleAppStore(request, env);
+  return appsRes;
+}
 
 async function handleNoteView(id, env) {
   const note = await env.DB.prepare('SELECT * FROM notes WHERE id = ?').bind(id).first();
